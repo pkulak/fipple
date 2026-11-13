@@ -11,7 +11,7 @@ use std::{env, process};
 
 use anyhow::{Context, Result, anyhow, bail};
 use fipple::Settings;
-use notify_rust::Notification;
+use notify_rust::{Notification, Timeout};
 use signal_hook::consts::SIGTERM;
 use signal_hook::iterator::Signals;
 
@@ -19,6 +19,9 @@ use crate::record::{self, Recording};
 
 /// Recordings shorter than this are taken to be accidental and discarded.
 const MIN_RECORDING: Duration = Duration::from_secs(30);
+
+/// How long notifications about something the user just did stay up.
+const BRIEFLY: Timeout = Timeout::Milliseconds(5000);
 
 /// Listens for client requests, records meetings and processes them one at a
 /// time.
@@ -182,7 +185,7 @@ impl Daemon {
         let recording = Recording::start(&self.meetings)?;
         let dir = recording.dir.clone();
         state.recording = Some(recording);
-        notify("Recording started", &self.name(&dir));
+        notify("Recording started", &self.name(&dir), BRIEFLY);
         Ok(format!("ok recording to {}\n", dir.display()))
     }
 
@@ -197,13 +200,14 @@ impl Daemon {
             notify(
                 "Recording discarded",
                 &format!("{} was under 30 seconds", self.name(&dir)),
+                BRIEFLY,
             );
             return Ok(format!(
                 "ok discarded {}: under 30 seconds\n",
                 dir.display()
             ));
         }
-        notify("Recording stopped", &self.name(&dir));
+        notify("Recording stopped", &self.name(&dir), BRIEFLY);
         self.enqueue(state, dir.clone());
         Ok(format!("ok queued {}\n", dir.display()))
     }
@@ -258,7 +262,7 @@ impl Daemon {
             match result {
                 Ok(finished) => {
                     drop(state);
-                    notify("Meeting processed", &self.name(&finished));
+                    notify("Meeting processed", &self.name(&finished), Timeout::Default);
                 }
                 Err(error) => {
                     let error = format!("{error:#}");
@@ -266,7 +270,7 @@ impl Daemon {
                     let body = format!("{}: {error}", self.name(&dir));
                     state.failed.push((dir, error));
                     drop(state);
-                    notify("Processing failed", &body);
+                    notify("Processing failed", &body, Timeout::Default);
                 }
             }
         }
@@ -304,11 +308,12 @@ fn status(state: &State) -> String {
 
 /// Sends a desktop notification. A failure is logged rather than returned,
 /// since nothing else depends on it.
-fn notify(summary: &str, body: &str) {
+fn notify(summary: &str, body: &str, timeout: Timeout) {
     if let Err(error) = Notification::new()
         .appname("fipple")
         .summary(summary)
         .body(body)
+        .timeout(timeout)
         .show()
     {
         eprintln!("sending a notification: {error}");
