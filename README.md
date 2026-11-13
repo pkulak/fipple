@@ -121,6 +121,8 @@ The daemon reads these environment variables when it starts:
 | `FIPPLE_SUMMARY_MODEL` | `openai/gpt-6.1-sol` | Chat model for the summary |
 | `FIPPLE_ECHO_CANCEL` | `false` | `true` to cancel speaker echo out of your track; see [Using Speakers](#using-speakers) |
 | `FIPPLE_ON_FINISHED` | none | Script to run on each processed meeting; see [When a Meeting Finishes](#when-a-meeting-finishes) |
+| `FIPPLE_SUMMARY_INSTRUCTIONS` | none | File of your own instructions for the summary model; see [Your Own Instructions](#your-own-instructions) |
+| `FIPPLE_TITLE_INSTRUCTIONS` | none | File of your own instructions for the title model |
 
 Set them the same way as the key, then restart the service. With Home Manager, you can also set them on the service:
 
@@ -141,6 +143,16 @@ services.fipple.echoCancel = true;
 Before transcribing, fipple uses WebRTC's echo canceller to remove the desktop track from your mic track, and saves the result as `assets/mic-clean.ogg`. `mic.ogg` stays as it was recorded. Recording doesn't change, so your call app's own echo cancellation works as usual.
 
 The canceller can only remove what fipple recorded on the desktop track, so your call app has to play through your default output.
+
+## Your Own Instructions
+
+To tell the models something about how you work, such as who's on your team or what language to write in, put it in a file and point `FIPPLE_SUMMARY_INSTRUCTIONS` or `FIPPLE_TITLE_INSTRUCTIONS` at it. With Home Manager:
+
+```nix
+services.fipple.summaryInstructions = pkgs.writeText "summary.md" ''
+  Write the minutes in English. My team is Alice, Bob and Carol.
+'';
+```
 
 ## When a Meeting Finishes
 

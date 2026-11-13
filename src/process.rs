@@ -100,7 +100,10 @@ pub fn process(dir: &Path, settings: &Settings) -> Result<PathBuf> {
         let summary = client
             .chat(
                 &settings.summary_model,
-                &prompt::summary_system(&settings.name),
+                &system(
+                    prompt::summary_system(&settings.name),
+                    &settings.summary_instructions,
+                )?,
                 &user,
             )
             .context("summarizing")?;
@@ -111,7 +114,7 @@ pub fn process(dir: &Path, settings: &Settings) -> Result<PathBuf> {
     let reply = client
         .chat(
             &settings.title_model,
-            prompt::TITLE_SYSTEM,
+            &system(prompt::TITLE_SYSTEM.into(), &settings.title_instructions)?,
             &prompt::title_user(&meeting, &summary),
         )
         .context("titling")?;
@@ -124,6 +127,15 @@ pub fn process(dir: &Path, settings: &Settings) -> Result<PathBuf> {
     fs::rename(dir, &finished)
         .with_context(|| format!("renaming {} to {}", dir.display(), finished.display()))?;
     Ok(finished)
+}
+
+/// A system prompt with the text of the `instructions` file, if any, after it.
+fn system(prompt: String, instructions: &Option<PathBuf>) -> Result<String> {
+    let Some(path) = instructions else {
+        return Ok(prompt);
+    };
+    let extra = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    Ok(format!("{prompt}\n\n{}", extra.trim()))
 }
 
 /// Writes `<track>.json` from `file` in `assets`, unless it already exists.

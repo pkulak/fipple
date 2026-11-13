@@ -49,9 +49,7 @@ pub fn run() -> Result<()> {
     let daemon = Arc::new(Daemon {
         settings,
         meetings,
-        on_finished: env::var_os("FIPPLE_ON_FINISHED")
-            .filter(|hook| !hook.is_empty())
-            .map(PathBuf::from),
+        on_finished: path_var("FIPPLE_ON_FINISHED"),
         state: Mutex::default(),
         queued: Condvar::new(),
     });
@@ -109,7 +107,16 @@ fn settings() -> Result<Settings> {
             .parse()
             .context("FIPPLE_ECHO_CANCEL must be true or false")?;
     }
+    settings.summary_instructions = path_var("FIPPLE_SUMMARY_INSTRUCTIONS");
+    settings.title_instructions = path_var("FIPPLE_TITLE_INSTRUCTIONS");
     Ok(settings)
+}
+
+/// The path in an environment variable, unless it's unset or empty.
+fn path_var(variable: &str) -> Option<PathBuf> {
+    env::var_os(variable)
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
 }
 
 /// The meeting folders in `meetings` that haven't been titled yet, oldest

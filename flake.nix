@@ -69,6 +69,16 @@
               default = null;
               description = "A script to run in each meeting folder after it's processed, with the folder as its argument.";
             };
+            summaryInstructions = lib.mkOption {
+              type = lib.types.nullOr lib.types.path;
+              default = null;
+              description = "A file of instructions to add to the summary model's system prompt.";
+            };
+            titleInstructions = lib.mkOption {
+              type = lib.types.nullOr lib.types.path;
+              default = null;
+              description = "A file of instructions to add to the title model's system prompt.";
+            };
           };
 
           config = lib.mkIf cfg.enable {
@@ -80,7 +90,13 @@
                 Restart = "on-failure";
                 Environment =
                   lib.optional cfg.echoCancel "FIPPLE_ECHO_CANCEL=true"
-                  ++ lib.optional (cfg.onFinished != null) "FIPPLE_ON_FINISHED=${cfg.onFinished}";
+                  ++ lib.optional (cfg.onFinished != null) "FIPPLE_ON_FINISHED=${cfg.onFinished}"
+                  ++ lib.optional (
+                    cfg.summaryInstructions != null
+                  ) "FIPPLE_SUMMARY_INSTRUCTIONS=${cfg.summaryInstructions}"
+                  ++ lib.optional (
+                    cfg.titleInstructions != null
+                  ) "FIPPLE_TITLE_INSTRUCTIONS=${cfg.titleInstructions}";
               };
               Install.WantedBy = [ "default.target" ];
             };

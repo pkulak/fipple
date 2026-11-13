@@ -307,6 +307,42 @@ fn existing_transcriptions_make_no_transcription_requests() {
 }
 
 #[test]
+fn instructions_follow_the_system_prompts() {
+    let stub = Stub::happy("Q3 planning");
+    let (root, dir) = meeting(&[
+        ("assets/mic.json", MIC_JSON),
+        ("assets/desktop.json", DESKTOP_JSON),
+    ]);
+    record(&dir, "mic");
+    let summary_instructions = root.path().join("summary.md");
+    let title_instructions = root.path().join("title.md");
+    fs::write(&summary_instructions, "Write in English.\n").unwrap();
+    fs::write(&title_instructions, "Start with the client.\n").unwrap();
+    let settings = Settings {
+        summary_instructions: Some(summary_instructions),
+        title_instructions: Some(title_instructions),
+        ..stub.settings()
+    };
+
+    fipple::process(&dir, &settings).unwrap();
+
+    let requests = stub.requests.lock().unwrap();
+    let system = |index: usize| requests[index].body["messages"][0]["content"].clone();
+    assert!(
+        system(0)
+            .as_str()
+            .unwrap()
+            .ends_with("\n\nWrite in English.")
+    );
+    assert!(
+        system(1)
+            .as_str()
+            .unwrap()
+            .ends_with("\n\nStart with the client.")
+    );
+}
+
+#[test]
 fn words_make_one_line_per_sentence() {
     let mic = r#"{"text": "Hello there.", "segments": [
         {"start": 2.0, "end": 2.6, "text": "Hello there."}

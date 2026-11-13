@@ -3,6 +3,8 @@ mod openrouter;
 mod process;
 mod prompt;
 
+use std::path::PathBuf;
+
 pub use process::{ASSETS, is_unfinished, meeting_dir, process};
 
 /// Everything processing needs besides the meeting folder.
@@ -21,6 +23,10 @@ pub struct Settings {
     /// Whether to cancel the desktop track's echo out of the mic track before
     /// transcribing it.
     pub echo_cancel: bool,
+    /// A file whose text goes after the summary model's system prompt.
+    pub summary_instructions: Option<PathBuf>,
+    /// A file whose text goes after the title model's system prompt.
+    pub title_instructions: Option<PathBuf>,
 }
 
 impl Settings {
@@ -35,6 +41,8 @@ impl Settings {
             title_model: "anthropic/claude-haiku-5.5".into(),
             summary_model: "openai/gpt-6.1-sol".into(),
             echo_cancel: false,
+            summary_instructions: None,
+            title_instructions: None,
         }
     }
 }
