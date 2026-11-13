@@ -88,14 +88,15 @@ pub fn process(dir: &Path, settings: &Settings) -> Result<PathBuf> {
         fs::write(&transcript_path, transcript(mic, desktop, &settings.name))?;
     }
 
+    let meeting = prompt::meeting(
+        &started.format("%Y-%m-%d").to_string(),
+        &started.format("%H:%M").to_string(),
+        &timestamp(duration(&assets.join("mic.ogg"))?),
+    );
+
     let summary_path = dir.join("summary.md");
     if !summary_path.exists() {
-        let user = prompt::summary_user(
-            &started.format("%Y-%m-%d").to_string(),
-            &started.format("%H:%M").to_string(),
-            &timestamp(duration(&assets.join("mic.ogg"))?),
-            &fs::read_to_string(&transcript_path)?,
-        );
+        let user = prompt::summary_user(&meeting, &fs::read_to_string(&transcript_path)?);
         let summary = client
             .chat(
                 &settings.summary_model,
@@ -108,7 +109,11 @@ pub fn process(dir: &Path, settings: &Settings) -> Result<PathBuf> {
 
     let summary = fs::read_to_string(&summary_path)?;
     let reply = client
-        .chat(&settings.title_model, prompt::TITLE_SYSTEM, &summary)
+        .chat(
+            &settings.title_model,
+            prompt::TITLE_SYSTEM,
+            &prompt::title_user(&meeting, &summary),
+        )
         .context("titling")?;
     let title = clean_title(&reply);
     if title.is_empty() {

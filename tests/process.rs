@@ -245,12 +245,14 @@ fn processes_a_fresh_meeting() {
         );
     }
 
-    let requests = stub.requests.lock().unwrap();
-    assert_eq!(requests[3].body["model"], "test/title");
-    assert_eq!(
-        requests[3].body["messages"][1]["content"],
-        format!("{SUMMARY}\n")
-    );
+    assert_eq!(stub.requests.lock().unwrap()[3].body["model"], "test/title");
+    let title_prompt = stub.chat_text(3);
+    for expected in ["2026-11-12", "14:30", "00:00:02", SUMMARY] {
+        assert!(
+            title_prompt.contains(expected),
+            "the title prompt lacks {expected:?}"
+        );
+    }
 }
 
 #[test]
@@ -354,6 +356,7 @@ fn existing_outputs_skip_their_steps() {
         ("transcript.md", "edited transcript\n"),
         ("summary.md", "edited summary\n"),
     ]);
+    record(&dir, "mic");
 
     let finished = fipple::process(&dir, &stub.settings()).unwrap();
 
@@ -383,6 +386,7 @@ fn cleans_the_title() {
             ("assets/desktop.json", DESKTOP_JSON),
             ("summary.md", SUMMARY),
         ]);
+        record(&dir, "mic");
 
         let finished = fipple::process(&dir, &stub.settings()).unwrap();
 
@@ -402,6 +406,7 @@ fn an_empty_title_fails() {
         ("assets/desktop.json", DESKTOP_JSON),
         ("summary.md", SUMMARY),
     ]);
+    record(&dir, "mic");
 
     let error = fipple::process(&dir, &stub.settings()).unwrap_err();
 
