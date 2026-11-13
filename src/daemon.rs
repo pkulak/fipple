@@ -1,5 +1,4 @@
 use std::collections::VecDeque;
-use std::env;
 use std::fmt::Write as _;
 use std::fs;
 use std::io::{BufRead, BufReader, ErrorKind, Write};
@@ -7,12 +6,22 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
+use std::time::Duration;
+use std::{env, process};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use fipple::Settings;
 use notify_rust::Notification;
+use signal_hook::consts::SIGTERM;
+use signal_hook::iterator::Signals;
 
-/// Listens for client requests and processes meetings one at a time.
+use crate::record::Recording;
+
+/// Recordings shorter than this are taken to be accidental and discarded.
+const MIN_RECORDING: Duration = Duration::from_secs(30);
+
+/// Listens for client requests, records meetings and processes them one at a
+/// time.
 pub fn run() -> Result<()> {
     let settings = settings()?;
     let meetings = match env::var_os("FIPPLE_DIR") {
@@ -35,15 +44,27 @@ pub fn run() -> Result<()> {
 
     let daemon = Arc::new(Daemon {
         settings,
+        meetings,
         state: Mutex::default(),
         queued: Condvar::new(),
     });
-    for dir in unfinished(&meetings)? {
-        daemon.enqueue(dir);
+    {
+        let mut state = daemon.state.lock().unwrap();
+        for dir in unfinished(&daemon.meetings)? {
+            daemon.enqueue(&mut state, dir);
+        }
     }
     thread::spawn({
         let daemon = daemon.clone();
         move || daemon.work()
+    });
+    let mut signals = Signals::new([SIGTERM])?;
+    thread::spawn({
+        let daemon = daemon.clone();
+        move || {
+            signals.forever().next();
+            daemon.shut_down();
+        }
     });
 
     for stream in listener.incoming() {
@@ -101,6 +122,8 @@ fn unfinished(meetings: &Path) -> Result<Vec<PathBuf>> {
 
 struct Daemon {
     settings: Settings,
+    /// Where meeting folders go.
+    meetings: PathBuf,
     state: Mutex<State>,
     /// Signalled when a folder joins the queue.
     queued: Condvar,
@@ -108,6 +131,7 @@ struct Daemon {
 
 #[derive(Default)]
 struct State {
+    recording: Option<Recording>,
     processing: Option<PathBuf>,
     queue: VecDeque<PathBuf>,
     /// Folders whose last attempt failed, with the error.
@@ -120,22 +144,75 @@ impl Daemon {
         let mut line = String::new();
         BufReader::new(&stream).read_line(&mut line)?;
         let request = line.trim_end_matches(['\r', '\n']);
+        // Holding the lock while a recording stops makes SIGTERM wait for its
+        // files to be written.
+        let mut state = self.state.lock().unwrap();
         let reply = match request {
-            "status" => self.status(),
+            "start" => self.start(&mut state),
+            "stop" => self.stop(&mut state),
+            "toggle" if state.recording.is_some() => self.stop(&mut state),
+            "toggle" => self.start(&mut state),
+            "status" => Ok(status(&state)),
             _ => match request.strip_prefix("process ") {
-                Some(dir) if self.enqueue(PathBuf::from(dir)) => format!("ok queued {dir}\n"),
-                Some(dir) => format!("error {dir} is already queued\n"),
-                None => format!("error unknown request: {request}\n"),
+                Some(dir) if self.enqueue(&mut state, PathBuf::from(dir)) => {
+                    Ok(format!("ok queued {dir}\n"))
+                }
+                Some(dir) => Err(anyhow!("{dir} is already queued")),
+                None => Err(anyhow!("unknown request: {request}")),
             },
         };
+        drop(state);
+        let reply = reply.unwrap_or_else(|error| format!("error {error:#}\n"));
         (&stream).write_all(reply.as_bytes())?;
         Ok(())
     }
 
+    fn start(&self, state: &mut State) -> Result<String> {
+        if state.recording.is_some() {
+            bail!("already recording");
+        }
+        let recording = Recording::start(&self.meetings)?;
+        let dir = recording.dir.clone();
+        state.recording = Some(recording);
+        notify("Recording started", &folder_name(&dir));
+        Ok(format!("ok recording to {}\n", dir.display()))
+    }
+
+    /// Stops the recording and queues it, or discards it if it's too short.
+    fn stop(&self, state: &mut State) -> Result<String> {
+        let Some(recording) = state.recording.take() else {
+            bail!("not recording");
+        };
+        let dir = recording.dir.clone();
+        if recording.stop() < MIN_RECORDING {
+            fs::remove_dir_all(&dir).with_context(|| format!("removing {}", dir.display()))?;
+            notify(
+                "Recording discarded",
+                &format!("{} was under 30 seconds", folder_name(&dir)),
+            );
+            return Ok(format!(
+                "ok discarded {}: under 30 seconds\n",
+                dir.display()
+            ));
+        }
+        notify("Recording stopped", &folder_name(&dir));
+        self.enqueue(state, dir.clone());
+        Ok(format!("ok queued {}\n", dir.display()))
+    }
+
+    /// Finishes writing any recording, without processing it, and exits. The
+    /// next startup queues it along with any meeting being processed now.
+    fn shut_down(&self) -> ! {
+        let mut state = self.state.lock().unwrap();
+        if let Some(recording) = state.recording.take() {
+            recording.stop();
+        }
+        process::exit(0);
+    }
+
     /// Queues a folder for processing, unless it's already waiting or being
     /// processed. Returns whether it was queued.
-    fn enqueue(&self, dir: PathBuf) -> bool {
-        let mut state = self.state.lock().unwrap();
+    fn enqueue(&self, state: &mut State, dir: PathBuf) -> bool {
         if state.processing.as_ref() == Some(&dir) || state.queue.contains(&dir) {
             return false;
         }
@@ -143,24 +220,6 @@ impl Daemon {
         state.queue.push_back(dir);
         self.queued.notify_one();
         true
-    }
-
-    fn status(&self) -> String {
-        let state = self.state.lock().unwrap();
-        let mut reply = String::from("ok\n");
-        if let Some(dir) = &state.processing {
-            writeln!(reply, "processing: {}", dir.display()).unwrap();
-        }
-        for dir in &state.queue {
-            writeln!(reply, "queued: {}", dir.display()).unwrap();
-        }
-        for (dir, error) in &state.failed {
-            writeln!(reply, "failed: {}: {error}", dir.display()).unwrap();
-        }
-        if reply == "ok\n" {
-            reply.push_str("idle\n");
-        }
-        reply
     }
 
     /// Processes queued folders one at a time, forever.
@@ -195,6 +254,35 @@ impl Daemon {
             }
         }
     }
+}
+
+fn status(state: &State) -> String {
+    let mut reply = String::from("ok\n");
+    if let Some(recording) = &state.recording {
+        let seconds = recording.started.elapsed().as_secs();
+        writeln!(
+            reply,
+            "recording: {} for {:02}:{:02}:{:02}",
+            recording.dir.display(),
+            seconds / 3600,
+            seconds % 3600 / 60,
+            seconds % 60
+        )
+        .unwrap();
+    }
+    if let Some(dir) = &state.processing {
+        writeln!(reply, "processing: {}", dir.display()).unwrap();
+    }
+    for dir in &state.queue {
+        writeln!(reply, "queued: {}", dir.display()).unwrap();
+    }
+    for (dir, error) in &state.failed {
+        writeln!(reply, "failed: {}: {error}", dir.display()).unwrap();
+    }
+    if reply == "ok\n" {
+        reply.push_str("idle\n");
+    }
+    reply
 }
 
 fn folder_name(dir: &Path) -> String {

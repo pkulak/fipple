@@ -2,7 +2,7 @@ mod openrouter;
 mod process;
 mod prompt;
 
-pub use process::{is_unfinished, process};
+pub use process::{FOLDER_FORMAT, is_unfinished, process};
 
 /// Everything processing needs besides the meeting folder.
 #[derive(Clone, Debug)]

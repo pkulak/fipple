@@ -1,5 +1,6 @@
 mod client;
 mod daemon;
+mod record;
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -7,13 +8,13 @@ use std::process::ExitCode;
 
 use anyhow::{Context, Result};
 
-const USAGE: &str = "usage: fipple daemon | status | process <dir>";
+const USAGE: &str = "usage: fipple daemon | start | stop | toggle | status | process <dir>";
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
     let result = match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
         ["daemon"] => daemon::run().map(|()| true),
-        ["status"] => client::send("status"),
+        [command @ ("start" | "stop" | "toggle" | "status")] => client::send(command),
         ["process", dir] => process(Path::new(dir)),
         _ => {
             eprintln!("{USAGE}");

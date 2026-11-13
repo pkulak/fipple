@@ -12,7 +12,7 @@ use crate::openrouter::OpenRouter;
 use crate::prompt;
 
 /// The format of an unfinished meeting folder's name.
-const FOLDER_FORMAT: &str = "%Y-%m-%d %H%M";
+pub const FOLDER_FORMAT: &str = "%Y-%m-%d %H%M";
 
 /// The upload limit for one transcription request.
 const MAX_UPLOAD_BYTES: usize = 25 * 1024 * 1024;
