@@ -23,16 +23,14 @@ impl<'a> OpenRouter<'a> {
     }
 
     /// Returns the raw `verbose_json` response body.
-    pub fn transcribe(&self, mp3: &[u8], provider_options: Option<&Value>) -> Result<String> {
-        let mut body = json!({
+    pub fn transcribe(&self, mp3: &[u8], provider_options: &Value) -> Result<String> {
+        let body = json!({
             "model": self.settings.transcribe_model,
             "input_audio": {"data": STANDARD.encode(mp3), "format": "mp3"},
             "response_format": "verbose_json",
             "timestamp_granularities": ["segment"],
+            "provider": {"options": provider_options},
         });
-        if let Some(options) = provider_options {
-            body["provider"] = json!({ "options": options });
-        }
         self.post("audio/transcriptions", &body)
     }
 

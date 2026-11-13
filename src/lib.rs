@@ -13,7 +13,7 @@ pub struct Settings {
     /// The label for the mic track in the transcript and summary.
     pub name: String,
     pub transcribe_model: String,
-    /// Sent as `provider.options` with the desktop track.
+    /// Sent as `provider.options` with both tracks.
     pub transcribe_options: serde_json::Value,
     pub title_model: String,
     pub summary_model: String,

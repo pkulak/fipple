@@ -53,13 +53,11 @@ pub fn process(dir: &Path, settings: &Settings) -> Result<PathBuf> {
     let client = OpenRouter::new(settings)?;
     let assets = dir.join(ASSETS);
 
-    transcribe(&client, &assets, "mic", None)?;
-    transcribe(
-        &client,
-        &assets,
-        "desktop",
-        Some(&settings.transcribe_options),
-    )?;
+    // The mic track gets the options too: without diarization, MAI-Transcribe 2
+    // returns the whole track as one segment starting at 0.
+    for track in ["mic", "desktop"] {
+        transcribe(&client, &assets, track, &settings.transcribe_options)?;
+    }
 
     let transcript_path = dir.join("transcript.md");
     if !transcript_path.exists() {
@@ -107,7 +105,7 @@ fn transcribe(
     client: &OpenRouter,
     assets: &Path,
     track: &str,
-    provider_options: Option<&Value>,
+    provider_options: &Value,
 ) -> Result<()> {
     let out = assets.join(format!("{track}.json"));
     if out.exists() {

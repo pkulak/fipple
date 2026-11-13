@@ -110,7 +110,7 @@ The daemon reads these environment variables when it starts:
 | `FIPPLE_DIR` | `~/Meetings` | Where meeting folders go |
 | `FIPPLE_NAME` | `Me` | Your label in the transcript and summary |
 | `FIPPLE_TRANSCRIBE_MODEL` | `microsoft/mai-transcribe-2` | Speech-to-text model |
-| `FIPPLE_TRANSCRIBE_OPTIONS` | `{"azure":{"diarization":{"enabled":true}}}` | JSON sent as `provider.options` when transcribing the desktop track |
+| `FIPPLE_TRANSCRIBE_OPTIONS` | `{"azure":{"diarization":{"enabled":true}}}` | JSON sent as `provider.options` when transcribing each track |
 | `FIPPLE_TITLE_MODEL` | `anthropic/claude-haiku-5.5` | Chat model for the title |
 | `FIPPLE_SUMMARY_MODEL` | `openai/gpt-6.1-sol` | Chat model for the summary |
 

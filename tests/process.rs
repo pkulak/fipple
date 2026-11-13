@@ -4,6 +4,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -87,11 +88,9 @@ impl Stub {
 
     /// Answers like OpenRouter would, with `title` as the title model's reply.
     fn happy(title: &'static str) -> Stub {
+        let transcriptions = AtomicUsize::new(0);
         Stub::start(move |path, body| match path {
-            "/api/v1/audio/transcriptions" if body.get("provider").is_some() => {
-                (200, DESKTOP_JSON.to_string())
-            }
-            "/api/v1/audio/transcriptions" => (200, MIC_JSON.to_string()),
+            "/api/v1/audio/transcriptions" => transcription(&transcriptions),
             "/api/v1/chat/completions" if body["model"] == "test/summary" => (200, chat(SUMMARY)),
             "/api/v1/chat/completions" if body["model"] == "test/title" => (200, chat(title)),
             _ => (404, format!("unexpected request to {path}")),
@@ -130,6 +129,16 @@ impl Stub {
             .collect::<Vec<_>>()
             .join("\n")
     }
+}
+
+/// Answers transcription requests in the order `process` makes them: mic, then
+/// desktop.
+fn transcription(count: &AtomicUsize) -> (u16, String) {
+    let json = match count.fetch_add(1, Ordering::SeqCst) {
+        0 => MIC_JSON,
+        _ => DESKTOP_JSON,
+    };
+    (200, json.to_string())
 }
 
 fn chat(content: &str) -> String {
@@ -210,17 +219,12 @@ fn processes_a_fresh_meeting() {
             .all(|r| r.authorization == "Bearer test-key")
     );
 
-    let (desktop, mic): (Vec<_>, Vec<_>) = requests[..2]
-        .iter()
-        .partition(|r| r.body.get("provider").is_some());
-    assert_eq!(desktop.len(), 1);
-    assert_eq!(
-        desktop[0].body["provider"],
-        json!({"options": {"test": {"diarize": true}}})
-    );
-    assert_eq!(mic.len(), 1);
-    for request in [desktop[0], mic[0]] {
+    for request in &requests[..2] {
         let body = &request.body;
+        assert_eq!(
+            body["provider"],
+            json!({"options": {"test": {"diarize": true}}})
+        );
         assert_eq!(body["model"], "test/transcribe");
         assert_eq!(body["response_format"], "verbose_json");
         assert_eq!(body["timestamp_granularities"], json!(["segment"]));
@@ -336,11 +340,9 @@ fn an_empty_title_fails() {
 
 #[test]
 fn a_failing_response_leaves_the_bare_name() {
-    let stub = Stub::start(|path, body| match path {
-        "/api/v1/audio/transcriptions" if body.get("provider").is_some() => {
-            (200, DESKTOP_JSON.to_string())
-        }
-        "/api/v1/audio/transcriptions" => (200, MIC_JSON.to_string()),
+    let transcriptions = AtomicUsize::new(0);
+    let stub = Stub::start(move |path, _| match path {
+        "/api/v1/audio/transcriptions" => transcription(&transcriptions),
         _ => (500, "upstream error".to_string()),
     });
     let (_root, dir) = meeting(&[]);
