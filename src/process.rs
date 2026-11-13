@@ -8,6 +8,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::Settings;
+use crate::echo;
 use crate::openrouter::OpenRouter;
 use crate::prompt;
 
@@ -53,10 +54,31 @@ pub fn process(dir: &Path, settings: &Settings) -> Result<PathBuf> {
     let client = OpenRouter::new(settings)?;
     let assets = dir.join(ASSETS);
 
+    let mic = if settings.echo_cancel {
+        let clean = assets.join("mic-clean.ogg");
+        if !clean.exists() {
+            // A temporary file, so an interrupted run doesn't look finished.
+            let temp = tempfile::Builder::new()
+                .prefix(".mic-clean-")
+                .suffix(".ogg")
+                .tempfile_in(&assets)?;
+            echo::cancel(
+                &assets.join("mic.ogg"),
+                &assets.join("desktop.ogg"),
+                temp.path(),
+            )
+            .context("cancelling echo")?;
+            temp.persist(&clean)?;
+        }
+        "mic-clean.ogg"
+    } else {
+        "mic.ogg"
+    };
+
     // The mic track gets the options too: without diarization, MAI-Transcribe 2
     // returns the whole track as one segment starting at 0.
-    for track in ["mic", "desktop"] {
-        transcribe(&client, &assets, track, &settings.transcribe_options)?;
+    for (file, track) in [(mic, "mic"), ("desktop.ogg", "desktop")] {
+        transcribe(&client, &assets, file, track, &settings.transcribe_options)?;
     }
 
     let transcript_path = dir.join("transcript.md");
@@ -99,11 +121,11 @@ pub fn process(dir: &Path, settings: &Settings) -> Result<PathBuf> {
     Ok(finished)
 }
 
-/// Writes `<track>.json` from `<track>.ogg` in `assets`, unless it already
-/// exists.
+/// Writes `<track>.json` from `file` in `assets`, unless it already exists.
 fn transcribe(
     client: &OpenRouter,
     assets: &Path,
+    file: &str,
     track: &str,
     provider_options: &Value,
 ) -> Result<()> {
@@ -120,7 +142,7 @@ fn transcribe(
         .tempfile()?;
     run(Command::new("ffmpeg")
         .args(["-nostdin", "-v", "error", "-y", "-i"])
-        .arg(assets.join(format!("{track}.ogg")))
+        .arg(assets.join(file))
         .args([
             "-ac",
             "1",
@@ -136,14 +158,14 @@ fn transcribe(
         .arg(mp3.path()))?;
     let audio = fs::read(mp3.path())?;
     if audio.len() > MAX_UPLOAD_BYTES {
-        bail!("{track}.ogg: track too long for one request");
+        bail!("{file}: track too long for one request");
     }
 
     let body = client
         .transcribe(&audio, provider_options)
-        .with_context(|| format!("transcribing {track}.ogg"))?;
+        .with_context(|| format!("transcribing {file}"))?;
     serde_json::from_str::<Transcription>(&body)
-        .with_context(|| format!("parsing the {track}.ogg transcription"))?;
+        .with_context(|| format!("parsing the {file} transcription"))?;
     fs::write(out, body)?;
     Ok(())
 }
@@ -190,7 +212,7 @@ fn transcript(mic: &Transcription, desktop: &Transcription, name: &str) -> Strin
 }
 
 /// Formats seconds as `HH:MM:SS`.
-fn timestamp(seconds: f64) -> String {
+pub(crate) fn timestamp(seconds: f64) -> String {
     let total = seconds.max(0.0) as u64;
     format!(
         "{:02}:{:02}:{:02}",

@@ -34,10 +34,15 @@ impl Recording {
             started: Instant::now(),
             pipelines: Vec::new(),
         };
-        // No target is set, so PipeWire follows the default devices.
+        // No target is set, so PipeWire follows the default devices. Sharing a
+        // node group puts the mic and speakers on one clock, so the tracks
+        // don't drift apart, which echo cancellation needs.
         for (file, properties) in [
-            ("mic.ogg", None),
-            ("desktop.ogg", Some("{ stream.capture.sink = true }")),
+            ("mic.ogg", "{ node.group = fipple }"),
+            (
+                "desktop.ogg",
+                "{ node.group = fipple stream.capture.sink = true }",
+            ),
         ] {
             match Pipeline::start(&assets.join(file), properties) {
                 Ok(pipeline) => recording.pipelines.push(pipeline),
@@ -90,22 +95,20 @@ pub fn discard(dir: &Path) -> Result<()> {
 }
 
 impl Pipeline {
-    fn start(out: &Path, properties: Option<&str>) -> Result<Pipeline> {
-        let mut recorder = Command::new("pw-record");
-        recorder.args([
-            "--raw",
-            "--rate",
-            "48000",
-            "--channels",
-            "1",
-            "--format",
-            "s16",
-        ]);
-        if let Some(properties) = properties {
-            recorder.args(["--properties", properties]);
-        }
-        let mut recorder = recorder
-            .arg("-")
+    fn start(out: &Path, properties: &str) -> Result<Pipeline> {
+        let mut recorder = Command::new("pw-record")
+            .args([
+                "--raw",
+                "--rate",
+                "48000",
+                "--channels",
+                "1",
+                "--format",
+                "s16",
+                "--properties",
+                properties,
+                "-",
+            ])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .spawn()

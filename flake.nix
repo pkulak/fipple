@@ -20,11 +20,15 @@
             version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
             src = self;
             cargoLock.lockFile = ./Cargo.lock;
-            # rustls's crypto provider links against it.
-            buildInputs = [ pkgs.aws-lc ];
+            buildInputs = [
+              # rustls's crypto provider links against it.
+              pkgs.aws-lc
+              pkgs.webrtc-audio-processing
+            ];
             nativeBuildInputs = [
               pkgs.pkg-config
               pkgs.makeWrapper
+              pkgs.rustPlatform.bindgenHook
             ];
             # The tests generate audio fixtures and convert them to MP3, and the
             # HTTP client won't build without CA certificates.
@@ -56,7 +60,10 @@
           package = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
         in
         {
-          options.services.fipple.enable = lib.mkEnableOption "the fipple meeting recorder";
+          options.services.fipple = {
+            enable = lib.mkEnableOption "the fipple meeting recorder";
+            echoCancel = lib.mkEnableOption "cancelling the speakers' echo out of the mic track";
+          };
 
           config = lib.mkIf config.services.fipple.enable {
             home.packages = [ package ];
@@ -65,6 +72,7 @@
               Service = {
                 ExecStart = "${lib.getExe package} daemon";
                 Restart = "on-failure";
+                Environment = lib.mkIf config.services.fipple.echoCancel [ "FIPPLE_ECHO_CANCEL=true" ];
               };
               Install.WantedBy = [ "default.target" ];
             };
@@ -80,6 +88,7 @@
       devShells = forAllSystems (
         system: pkgs: {
           default = pkgs.mkShell {
+            inputsFrom = [ self.packages.${system}.default ];
             packages = with pkgs; [
               cargo
               rustc

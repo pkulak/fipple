@@ -42,6 +42,12 @@ Install the binary with Cargo:
 cargo install --git https://github.com/pkulak/fipple
 ```
 
+It links against version 2 of PulseAudio's [webrtc-audio-processing](https://gitlab.freedesktop.org/pulseaudio/webrtc-audio-processing) so building it needs that library's development package, plus Clang. Many distributions still ship only version 1. If yours does, build the library from source along with fipple, which also needs Meson and Ninja:
+
+```sh
+cargo install --git https://github.com/pkulak/fipple --features bundled
+```
+
 fipple runs `pw-record`, `ffmpeg` and `ffprobe`, so make sure they're installed (`pw-record` usually comes with PipeWire's tools package). Then copy [`fipple.service`](fipple.service) into `~/.config/systemd/user/` and enable it:
 
 ```sh
@@ -113,6 +119,7 @@ The daemon reads these environment variables when it starts:
 | `FIPPLE_TRANSCRIBE_OPTIONS` | `{"azure":{"diarization":{"enabled":true}}}` | JSON sent as `provider.options` when transcribing each track |
 | `FIPPLE_TITLE_MODEL` | `anthropic/claude-haiku-5.5` | Chat model for the title |
 | `FIPPLE_SUMMARY_MODEL` | `openai/gpt-6.1-sol` | Chat model for the summary |
+| `FIPPLE_ECHO_CANCEL` | `false` | `true` to cancel speaker echo out of your track; see [Using Speakers](#using-speakers) |
 
 Set them the same way as the key, then restart the service. With Home Manager, you can also set them on the service:
 
@@ -124,20 +131,12 @@ systemd.user.services.fipple.Service.Environment = [ "FIPPLE_NAME=Alice" ];
 
 ## Using Speakers
 
-If you listen through speakers rather than headphones, your microphone picks up everyone else too, and their words show up in the transcript twice: once as themselves and once as you. The fix is PipeWire's echo-cancel module. Add it with a file such as `~/.config/pipewire/pipewire.conf.d/echo-cancel.conf`:
+If you listen through speakers rather than headphones, your microphone picks up everyone else too, and their words show up in the transcript twice: once as themselves and once as you. Set `FIPPLE_ECHO_CANCEL=true` to fix that, or with Home Manager:
 
-```
-context.modules = [
-  { name = libpipewire-module-echo-cancel
-    args = {
-      library.name = aec/libspa-aec-webrtc
-      capture.props = { node.name = "echo-cancel-capture" }
-      source.props = { node.name = "echo-cancel-source" node.description = "Echo-cancelled microphone" }
-      sink.props = { node.name = "echo-cancel-sink" node.description = "Echo-cancelled speakers" }
-      playback.props = { node.name = "echo-cancel-playback" }
-    }
-  }
-]
+```nix
+services.fipple.echoCancel = true;
 ```
 
-Restart PipeWire (`systemctl --user restart pipewire`), then make the echo-cancelled source and sink your defaults, in your desktop's sound settings or with `wpctl set-default`. fipple always records the defaults, so that's all it needs. Your call app has to use the defaults too. If it plays straight to your speakers, the echo canceller can't hear it, and neither can fipple.
+Before transcribing, fipple uses WebRTC's echo canceller to remove the desktop track from your mic track, and saves the result as `assets/mic-clean.ogg`. `mic.ogg` stays as it was recorded. Recording doesn't change, so your call app's own echo cancellation works as usual.
+
+The canceller can only remove what fipple recorded on the desktop track, so your call app has to play through your default output.

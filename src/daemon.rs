@@ -100,6 +100,11 @@ fn settings() -> Result<Settings> {
         settings.transcribe_options = serde_json::from_str(&options)
             .context("FIPPLE_TRANSCRIBE_OPTIONS is not valid JSON")?;
     }
+    if let Ok(value) = env::var("FIPPLE_ECHO_CANCEL") {
+        settings.echo_cancel = value
+            .parse()
+            .context("FIPPLE_ECHO_CANCEL must be true or false")?;
+    }
     Ok(settings)
 }
 

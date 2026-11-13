@@ -1,3 +1,4 @@
+mod echo;
 mod openrouter;
 mod process;
 mod prompt;
@@ -17,6 +18,9 @@ pub struct Settings {
     pub transcribe_options: serde_json::Value,
     pub title_model: String,
     pub summary_model: String,
+    /// Whether to cancel the desktop track's echo out of the mic track before
+    /// transcribing it.
+    pub echo_cancel: bool,
 }
 
 impl Settings {
@@ -30,6 +34,7 @@ impl Settings {
             transcribe_options: serde_json::json!({"azure": {"diarization": {"enabled": true}}}),
             title_model: "anthropic/claude-haiku-5.5".into(),
             summary_model: "openai/gpt-6.1-sol".into(),
+            echo_cancel: false,
         }
     }
 }

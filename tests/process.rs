@@ -254,6 +254,36 @@ fn processes_a_fresh_meeting() {
 }
 
 #[test]
+fn echo_cancelling_keeps_the_cleaned_mic_track() {
+    let stub = Stub::happy("Q3 planning");
+    let (root, dir) = meeting(&[]);
+    record(&dir, "mic");
+    record(&dir, "desktop");
+    let settings = Settings {
+        echo_cancel: true,
+        ..stub.settings()
+    };
+
+    let finished = fipple::process(&dir, &settings).unwrap();
+
+    assert_eq!(finished, root.path().join("2026/11/12/1430 Q3 planning"));
+    assert_eq!(
+        names(&finished.join("assets")),
+        BTreeSet::from(
+            [
+                "mic.ogg",
+                "mic-clean.ogg",
+                "desktop.ogg",
+                "mic.json",
+                "desktop.json"
+            ]
+            .map(String::from)
+        )
+    );
+    assert_eq!(read(&finished, "transcript.md"), TRANSCRIPT);
+}
+
+#[test]
 fn existing_transcriptions_make_no_transcription_requests() {
     let stub = Stub::happy("Q3 planning");
     let (root, dir) = meeting(&[
