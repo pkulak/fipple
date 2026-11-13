@@ -238,7 +238,13 @@ fn processes_a_fresh_meeting() {
     assert_eq!(requests[2].body["model"], "test/summary");
     drop(requests);
     let summary_prompt = stub.chat_text(2);
-    for expected in ["2026-11-12", "14:30", "00:00:02", TRANSCRIPT, "Phil"] {
+    for expected in [
+        "2026-11-12 (Thursday)",
+        "14:30",
+        "00:00:02",
+        TRANSCRIPT,
+        "Phil",
+    ] {
         assert!(
             summary_prompt.contains(expected),
             "the summary prompt lacks {expected:?}"
@@ -247,7 +253,7 @@ fn processes_a_fresh_meeting() {
 
     assert_eq!(stub.requests.lock().unwrap()[3].body["model"], "test/title");
     let title_prompt = stub.chat_text(3);
-    for expected in ["2026-11-12", "14:30", "00:00:02", SUMMARY] {
+    for expected in ["2026-11-12 (Thursday)", "14:30", "00:00:02", SUMMARY] {
         assert!(
             title_prompt.contains(expected),
             "the title prompt lacks {expected:?}"

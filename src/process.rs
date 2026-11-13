@@ -89,7 +89,7 @@ pub fn process(dir: &Path, settings: &Settings) -> Result<PathBuf> {
     }
 
     let meeting = prompt::meeting(
-        &started.format("%Y-%m-%d").to_string(),
+        &started.format("%Y-%m-%d (%A)").to_string(),
         &started.format("%H:%M").to_string(),
         &timestamp(duration(&assets.join("mic.ogg"))?),
     );
