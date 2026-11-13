@@ -22,16 +22,54 @@
             cargoLock.lockFile = ./Cargo.lock;
             # rustls's crypto provider links against it.
             buildInputs = [ pkgs.aws-lc ];
-            nativeBuildInputs = [ pkgs.pkg-config ];
+            nativeBuildInputs = [
+              pkgs.pkg-config
+              pkgs.makeWrapper
+            ];
             # The tests generate audio fixtures and convert them to MP3, and the
             # HTTP client won't build without CA certificates.
             nativeCheckInputs = [
               pkgs.ffmpeg-headless
               pkgs.cacert
             ];
+            postInstall = ''
+              wrapProgram $out/bin/fipple --prefix PATH : ${
+                pkgs.lib.makeBinPath [
+                  pkgs.pipewire
+                  pkgs.ffmpeg-headless
+                ]
+              }
+            '';
+            meta.mainProgram = "fipple";
           };
         }
       );
+
+      homeManagerModules.default =
+        {
+          config,
+          lib,
+          pkgs,
+          ...
+        }:
+        let
+          package = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+        in
+        {
+          options.services.fipple.enable = lib.mkEnableOption "the fipple meeting recorder";
+
+          config = lib.mkIf config.services.fipple.enable {
+            home.packages = [ package ];
+            systemd.user.services.fipple = {
+              Unit.Description = "fipple meeting recorder";
+              Service = {
+                ExecStart = "${lib.getExe package} daemon";
+                Restart = "on-failure";
+              };
+              Install.WantedBy = [ "default.target" ];
+            };
+          };
+        };
 
       checks = forAllSystems (
         system: pkgs: {

@@ -1,0 +1,9 @@
+[Unit]
+Description=fipple meeting recorder
+
+[Service]
+ExecStart=%h/.cargo/bin/fipple daemon
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
