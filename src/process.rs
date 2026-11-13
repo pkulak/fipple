@@ -11,40 +11,60 @@ use crate::Settings;
 use crate::openrouter::OpenRouter;
 use crate::prompt;
 
-/// The format of an unfinished meeting folder's name.
-pub const FOLDER_FORMAT: &str = "%Y-%m-%d %H%M";
+/// The format of an unfinished meeting folder's path under the meetings
+/// folder.
+const FOLDER_FORMAT: &str = "%Y/%m/%d/%H%M";
 
 /// The upload limit for one transcription request.
 const MAX_UPLOAD_BYTES: usize = 25 * 1024 * 1024;
 
 const MAX_TITLE_CHARS: usize = 60;
 
-/// Whether a folder name is a bare `YYYY-MM-DD HHMM`, with no title yet.
-pub fn is_unfinished(name: &str) -> bool {
-    NaiveDateTime::parse_from_str(name, FOLDER_FORMAT).is_ok()
+/// The folder for a meeting starting at `started`.
+pub fn meeting_dir(meetings: &Path, started: NaiveDateTime) -> PathBuf {
+    meetings.join(started.format(FOLDER_FORMAT).to_string())
 }
 
-/// Transcribes, summarizes and titles the unfinished meeting in `dir`, then
-/// renames it to `<YYYY-MM-DD HHMM> <title>` and returns the new path.
+/// The meeting subfolder holding everything besides `transcript.md` and
+/// `summary.md`: the recorded tracks and their transcriptions.
+pub const ASSETS: &str = "assets";
+
+/// Whether a folder is a bare `YYYY/MM/DD/HHMM`, with no title yet.
+pub fn is_unfinished(dir: &Path) -> bool {
+    started(dir).is_some()
+}
+
+/// When the unfinished meeting in `dir` started, from its last four path
+/// components.
+fn started(dir: &Path) -> Option<NaiveDateTime> {
+    let date = dir.strip_prefix(dir.ancestors().nth(4)?).ok()?;
+    NaiveDateTime::parse_from_str(date.to_str()?, FOLDER_FORMAT).ok()
+}
+
+/// Transcribes, summarizes and titles the unfinished meeting in
+/// `YYYY/MM/DD/HHMM`, then renames it to `HHMM <title>` and returns the new
+/// path.
 ///
 /// Each step whose output file already exists is skipped, so a retry after a
 /// failure doesn't repeat the requests that succeeded.
 pub fn process(dir: &Path, settings: &Settings) -> Result<PathBuf> {
-    let name = dir
-        .file_name()
-        .and_then(|name| name.to_str())
-        .with_context(|| format!("{} has no folder name", dir.display()))?;
-    let started = NaiveDateTime::parse_from_str(name, FOLDER_FORMAT)
-        .with_context(|| format!("{name} is not an unfinished meeting folder"))?;
+    let started = started(dir)
+        .with_context(|| format!("{} is not an unfinished meeting folder", dir.display()))?;
     let client = OpenRouter::new(settings)?;
+    let assets = dir.join(ASSETS);
 
-    transcribe(&client, dir, "mic", None)?;
-    transcribe(&client, dir, "desktop", Some(&settings.transcribe_options))?;
+    transcribe(&client, &assets, "mic", None)?;
+    transcribe(
+        &client,
+        &assets,
+        "desktop",
+        Some(&settings.transcribe_options),
+    )?;
 
     let transcript_path = dir.join("transcript.md");
     if !transcript_path.exists() {
-        let mic = read_transcription(&dir.join("mic.json"))?;
-        let desktop = read_transcription(&dir.join("desktop.json"))?;
+        let mic = read_transcription(&assets.join("mic.json"))?;
+        let desktop = read_transcription(&assets.join("desktop.json"))?;
         fs::write(&transcript_path, transcript(&mic, &desktop, &settings.name))?;
     }
 
@@ -53,7 +73,7 @@ pub fn process(dir: &Path, settings: &Settings) -> Result<PathBuf> {
         let user = prompt::summary_user(
             &started.format("%Y-%m-%d").to_string(),
             &started.format("%H:%M").to_string(),
-            &timestamp(duration(&dir.join("mic.ogg"))?),
+            &timestamp(duration(&assets.join("mic.ogg"))?),
             &fs::read_to_string(&transcript_path)?,
         );
         let summary = client
@@ -75,20 +95,21 @@ pub fn process(dir: &Path, settings: &Settings) -> Result<PathBuf> {
         bail!("the title model returned an empty title: {reply:?}");
     }
 
-    let finished = dir.with_file_name(format!("{name} {title}"));
+    let finished = dir.with_file_name(format!("{} {title}", started.format("%H%M")));
     fs::rename(dir, &finished)
         .with_context(|| format!("renaming {} to {}", dir.display(), finished.display()))?;
     Ok(finished)
 }
 
-/// Writes `<track>.json` from `<track>.ogg`, unless it already exists.
+/// Writes `<track>.json` from `<track>.ogg` in `assets`, unless it already
+/// exists.
 fn transcribe(
     client: &OpenRouter,
-    dir: &Path,
+    assets: &Path,
     track: &str,
     provider_options: Option<&Value>,
 ) -> Result<()> {
-    let out = dir.join(format!("{track}.json"));
+    let out = assets.join(format!("{track}.json"));
     if out.exists() {
         return Ok(());
     }
@@ -101,7 +122,7 @@ fn transcribe(
         .tempfile()?;
     run(Command::new("ffmpeg")
         .args(["-nostdin", "-v", "error", "-y", "-i"])
-        .arg(dir.join(format!("{track}.ogg")))
+        .arg(assets.join(format!("{track}.ogg")))
         .args([
             "-ac",
             "1",

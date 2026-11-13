@@ -15,7 +15,7 @@ use notify_rust::Notification;
 use signal_hook::consts::SIGTERM;
 use signal_hook::iterator::Signals;
 
-use crate::record::Recording;
+use crate::record::{self, Recording};
 
 /// Recordings shorter than this are taken to be accidental and discarded.
 const MIN_RECORDING: Duration = Duration::from_secs(30);
@@ -100,23 +100,31 @@ fn settings() -> Result<Settings> {
     Ok(settings)
 }
 
-/// The folders in `meetings` that haven't been titled yet, oldest first.
+/// The meeting folders in `meetings` that haven't been titled yet, oldest
+/// first.
 fn unfinished(meetings: &Path) -> Result<Vec<PathBuf>> {
+    // Meetings sit four levels down, in YYYY/MM/DD/HHMM.
+    let mut found = vec![meetings.to_path_buf()];
+    for _ in 0..4 {
+        found = found
+            .iter()
+            .map(|dir| subfolders(dir))
+            .collect::<Result<Vec<_>>>()?
+            .concat();
+    }
+    found.retain(|dir| fipple::is_unfinished(dir));
+    found.sort();
+    Ok(found)
+}
+
+fn subfolders(dir: &Path) -> Result<Vec<PathBuf>> {
     let mut found = Vec::new();
-    for entry in
-        fs::read_dir(meetings).with_context(|| format!("reading {}", meetings.display()))?
-    {
+    for entry in fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
         let entry = entry?;
-        if entry.file_type()?.is_dir()
-            && entry
-                .file_name()
-                .to_str()
-                .is_some_and(fipple::is_unfinished)
-        {
+        if entry.file_type()?.is_dir() {
             found.push(entry.path());
         }
     }
-    found.sort();
     Ok(found)
 }
 
@@ -174,7 +182,7 @@ impl Daemon {
         let recording = Recording::start(&self.meetings)?;
         let dir = recording.dir.clone();
         state.recording = Some(recording);
-        notify("Recording started", &folder_name(&dir));
+        notify("Recording started", &self.name(&dir));
         Ok(format!("ok recording to {}\n", dir.display()))
     }
 
@@ -185,19 +193,28 @@ impl Daemon {
         };
         let dir = recording.dir.clone();
         if recording.stop() < MIN_RECORDING {
-            fs::remove_dir_all(&dir).with_context(|| format!("removing {}", dir.display()))?;
+            record::discard(&dir)?;
             notify(
                 "Recording discarded",
-                &format!("{} was under 30 seconds", folder_name(&dir)),
+                &format!("{} was under 30 seconds", self.name(&dir)),
             );
             return Ok(format!(
                 "ok discarded {}: under 30 seconds\n",
                 dir.display()
             ));
         }
-        notify("Recording stopped", &folder_name(&dir));
+        notify("Recording stopped", &self.name(&dir));
         self.enqueue(state, dir.clone());
         Ok(format!("ok queued {}\n", dir.display()))
+    }
+
+    /// A meeting folder's path under the meetings folder, such as
+    /// `2026/11/12/1430`, for notifications.
+    fn name(&self, dir: &Path) -> String {
+        dir.strip_prefix(&self.meetings)
+            .unwrap_or(dir)
+            .display()
+            .to_string()
     }
 
     /// Finishes writing any recording, without processing it, and exits. The
@@ -241,12 +258,12 @@ impl Daemon {
             match result {
                 Ok(finished) => {
                     drop(state);
-                    notify("Meeting processed", &folder_name(&finished));
+                    notify("Meeting processed", &self.name(&finished));
                 }
                 Err(error) => {
                     let error = format!("{error:#}");
                     eprintln!("processing {}: {error}", dir.display());
-                    let body = format!("{}: {error}", folder_name(&dir));
+                    let body = format!("{}: {error}", self.name(&dir));
                     state.failed.push((dir, error));
                     drop(state);
                     notify("Processing failed", &body);
@@ -283,13 +300,6 @@ fn status(state: &State) -> String {
         reply.push_str("idle\n");
     }
     reply
-}
-
-fn folder_name(dir: &Path) -> String {
-    dir.file_name()
-        .unwrap_or(dir.as_os_str())
-        .to_string_lossy()
-        .into_owned()
 }
 
 /// Sends a desktop notification. A failure is logged rather than returned,

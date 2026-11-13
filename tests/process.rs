@@ -136,24 +136,24 @@ fn chat(content: &str) -> String {
     json!({"choices": [{"message": {"role": "assistant", "content": content}}]}).to_string()
 }
 
-/// A fresh meeting folder holding `files`.
+/// A fresh meeting folder holding `files`, given relative to it.
 fn meeting(files: &[(&str, &str)]) -> (TempDir, PathBuf) {
     let root = tempfile::tempdir().unwrap();
-    let dir = root.path().join("2026-11-12 1430");
-    fs::create_dir(&dir).unwrap();
+    let dir = root.path().join("2026/11/12/1430");
+    fs::create_dir_all(dir.join("assets")).unwrap();
     for (name, content) in files {
         fs::write(dir.join(name), content).unwrap();
     }
     (root, dir)
 }
 
-/// Writes a two-second Opus clip.
+/// Writes a two-second Opus clip to `assets/<track>.ogg`.
 fn record(dir: &Path, track: &str) {
     let status = Command::new("ffmpeg")
         .args(["-nostdin", "-v", "error", "-f", "lavfi", "-i"])
         .arg("sine=frequency=440:duration=2")
         .args(["-c:a", "libopus", "-b:a", "32k"])
-        .arg(dir.join(format!("{track}.ogg")))
+        .arg(dir.join(format!("assets/{track}.ogg")))
         .status()
         .unwrap();
     assert!(status.success());
@@ -179,24 +179,18 @@ fn processes_a_fresh_meeting() {
 
     let finished = fipple::process(&dir, &stub.settings()).unwrap();
 
-    assert_eq!(finished, root.path().join("2026-11-12 1430 Q3 planning"));
+    assert_eq!(finished, root.path().join("2026/11/12/1430 Q3 planning"));
     assert!(!dir.exists());
     assert_eq!(
         names(&finished),
-        BTreeSet::from(
-            [
-                "mic.ogg",
-                "desktop.ogg",
-                "mic.json",
-                "desktop.json",
-                "transcript.md",
-                "summary.md"
-            ]
-            .map(String::from)
-        )
+        BTreeSet::from(["assets", "transcript.md", "summary.md"].map(String::from))
     );
-    assert_eq!(read(&finished, "mic.json"), MIC_JSON);
-    assert_eq!(read(&finished, "desktop.json"), DESKTOP_JSON);
+    assert_eq!(
+        names(&finished.join("assets")),
+        BTreeSet::from(["mic.ogg", "desktop.ogg", "mic.json", "desktop.json"].map(String::from))
+    );
+    assert_eq!(read(&finished, "assets/mic.json"), MIC_JSON);
+    assert_eq!(read(&finished, "assets/desktop.json"), DESKTOP_JSON);
     assert_eq!(read(&finished, "transcript.md"), TRANSCRIPT);
     assert_eq!(read(&finished, "summary.md"), format!("{SUMMARY}\n"));
 
@@ -258,13 +252,16 @@ fn processes_a_fresh_meeting() {
 #[test]
 fn existing_transcriptions_make_no_transcription_requests() {
     let stub = Stub::happy("Q3 planning");
-    let (root, dir) = meeting(&[("mic.json", MIC_JSON), ("desktop.json", DESKTOP_JSON)]);
+    let (root, dir) = meeting(&[
+        ("assets/mic.json", MIC_JSON),
+        ("assets/desktop.json", DESKTOP_JSON),
+    ]);
     // ffprobe reads the duration from mic.ogg; desktop.ogg isn't needed.
     record(&dir, "mic");
 
     let finished = fipple::process(&dir, &stub.settings()).unwrap();
 
-    assert_eq!(finished, root.path().join("2026-11-12 1430 Q3 planning"));
+    assert_eq!(finished, root.path().join("2026/11/12/1430 Q3 planning"));
     assert_eq!(
         stub.paths(),
         ["/api/v1/chat/completions", "/api/v1/chat/completions"]
@@ -277,15 +274,15 @@ fn existing_transcriptions_make_no_transcription_requests() {
 fn existing_outputs_skip_their_steps() {
     let stub = Stub::happy("Q3 planning");
     let (root, dir) = meeting(&[
-        ("mic.json", MIC_JSON),
-        ("desktop.json", DESKTOP_JSON),
+        ("assets/mic.json", MIC_JSON),
+        ("assets/desktop.json", DESKTOP_JSON),
         ("transcript.md", "edited transcript\n"),
         ("summary.md", "edited summary\n"),
     ]);
 
     let finished = fipple::process(&dir, &stub.settings()).unwrap();
 
-    assert_eq!(finished, root.path().join("2026-11-12 1430 Q3 planning"));
+    assert_eq!(finished, root.path().join("2026/11/12/1430 Q3 planning"));
     assert_eq!(stub.paths(), ["/api/v1/chat/completions"]);
     assert_eq!(stub.chat_text(0).lines().last(), Some("edited summary"));
     assert_eq!(read(&finished, "transcript.md"), "edited transcript\n");
@@ -307,8 +304,8 @@ fn cleans_the_title() {
         let reply: &'static str = reply.to_string().leak();
         let stub = Stub::happy(reply);
         let (root, dir) = meeting(&[
-            ("mic.json", MIC_JSON),
-            ("desktop.json", DESKTOP_JSON),
+            ("assets/mic.json", MIC_JSON),
+            ("assets/desktop.json", DESKTOP_JSON),
             ("summary.md", SUMMARY),
         ]);
 
@@ -316,7 +313,7 @@ fn cleans_the_title() {
 
         assert_eq!(
             finished,
-            root.path().join(format!("2026-11-12 1430 {title}")),
+            root.path().join(format!("2026/11/12/1430 {title}")),
             "for the reply {reply:?}"
         );
     }
@@ -326,8 +323,8 @@ fn cleans_the_title() {
 fn an_empty_title_fails() {
     let stub = Stub::happy(" \"\" \n");
     let (_root, dir) = meeting(&[
-        ("mic.json", MIC_JSON),
-        ("desktop.json", DESKTOP_JSON),
+        ("assets/mic.json", MIC_JSON),
+        ("assets/desktop.json", DESKTOP_JSON),
         ("summary.md", SUMMARY),
     ]);
 
@@ -346,7 +343,7 @@ fn a_failing_response_leaves_the_bare_name() {
         "/api/v1/audio/transcriptions" => (200, MIC_JSON.to_string()),
         _ => (500, "upstream error".to_string()),
     });
-    let (root, dir) = meeting(&[]);
+    let (_root, dir) = meeting(&[]);
     record(&dir, "mic");
     record(&dir, "desktop");
 
@@ -354,8 +351,8 @@ fn a_failing_response_leaves_the_bare_name() {
 
     assert!(format!("{error:#}").contains("500"), "{error:#}");
     assert_eq!(
-        names(root.path()),
-        BTreeSet::from(["2026-11-12 1430".into()])
+        names(dir.parent().unwrap()),
+        BTreeSet::from(["1430".into()])
     );
     assert!(!dir.join("summary.md").exists());
 }

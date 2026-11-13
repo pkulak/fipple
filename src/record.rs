@@ -20,10 +20,15 @@ struct Pipeline {
 }
 
 impl Recording {
-    /// Creates `<meetings>/<YYYY-MM-DD HHMM>` and starts recording into it.
+    /// Creates `<meetings>/YYYY/MM/DD/HHMM` and starts recording into its
+    /// assets folder.
     pub fn start(meetings: &Path) -> Result<Recording> {
-        let dir = meetings.join(Local::now().format(fipple::FOLDER_FORMAT).to_string());
+        let dir = fipple::meeting_dir(meetings, Local::now().naive_local());
+        let day = dir.parent().unwrap();
+        fs::create_dir_all(day).with_context(|| format!("creating {}", day.display()))?;
         fs::create_dir(&dir).with_context(|| format!("creating {}", dir.display()))?;
+        let assets = dir.join(fipple::ASSETS);
+        fs::create_dir(&assets)?;
         let mut recording = Recording {
             dir,
             started: Instant::now(),
@@ -34,14 +39,14 @@ impl Recording {
             ("mic.ogg", None),
             ("desktop.ogg", Some("{ stream.capture.sink = true }")),
         ] {
-            match Pipeline::start(&recording.dir.join(file), properties) {
+            match Pipeline::start(&assets.join(file), properties) {
                 Ok(pipeline) => recording.pipelines.push(pipeline),
                 Err(error) => {
                     // Don't leave a recorder running or a folder that would
                     // block another start this minute.
                     let dir = recording.dir.clone();
                     recording.stop();
-                    fs::remove_dir_all(dir)?;
+                    discard(&dir)?;
                     return Err(error);
                 }
             }
@@ -69,6 +74,19 @@ impl Recording {
         }
         self.started.elapsed()
     }
+}
+
+/// Deletes a meeting folder, and its day, month and year folders if that
+/// leaves them empty.
+pub fn discard(dir: &Path) -> Result<()> {
+    fs::remove_dir_all(dir).with_context(|| format!("removing {}", dir.display()))?;
+    for parent in dir.ancestors().skip(1).take(3) {
+        // Fails once a folder still holds other meetings.
+        if fs::remove_dir(parent).is_err() {
+            break;
+        }
+    }
+    Ok(())
 }
 
 impl Pipeline {
