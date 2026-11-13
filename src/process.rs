@@ -19,6 +19,11 @@ const MAX_UPLOAD_BYTES: usize = 25 * 1024 * 1024;
 
 const MAX_TITLE_CHARS: usize = 60;
 
+/// Whether a folder name is a bare `YYYY-MM-DD HHMM`, with no title yet.
+pub fn is_unfinished(name: &str) -> bool {
+    NaiveDateTime::parse_from_str(name, FOLDER_FORMAT).is_ok()
+}
+
 /// Transcribes, summarizes and titles the unfinished meeting in `dir`, then
 /// renames it to `<YYYY-MM-DD HHMM> <title>` and returns the new path.
 ///

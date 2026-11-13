@@ -9,6 +9,7 @@ description = "A PipeWire meeting recorder that transcribes and summarizes throu
 anyhow = "1.0.104"
 base64 = "0.23.1"
 chrono = { version = "0.4.45", default-features = false, features = ["std"] }
+notify-rust = "4.19.0"
 reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "json", "rustls"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
