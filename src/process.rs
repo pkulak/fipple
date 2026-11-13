@@ -85,7 +85,7 @@ pub fn process(dir: &Path, settings: &Settings) -> Result<PathBuf> {
     if !transcript_path.exists() {
         let mic = read_transcription(&assets.join("mic.json"))?;
         let desktop = read_transcription(&assets.join("desktop.json"))?;
-        fs::write(&transcript_path, transcript(&mic, &desktop, &settings.name))?;
+        fs::write(&transcript_path, transcript(mic, desktop, &settings.name))?;
     }
 
     let summary_path = dir.join("summary.md");
@@ -172,15 +172,45 @@ fn transcribe(
 
 #[derive(Deserialize)]
 struct Transcription {
-    segments: Vec<Segment>,
+    segments: Vec<Piece>,
+    /// Not every provider returns words.
+    #[serde(default)]
+    words: Vec<Piece>,
 }
 
+/// A segment or a word.
 #[derive(Deserialize)]
-struct Segment {
+struct Piece {
     start: f64,
+    #[serde(alias = "word")]
     text: String,
     /// The provider's 0-based speaker index, from diarization.
     speaker: Option<u32>,
+}
+
+/// Joins a track's words into sentences, which also end where the speaker
+/// changes. Without words, each segment stands in for a sentence.
+fn sentences(track: Transcription) -> Vec<Piece> {
+    if track.words.is_empty() {
+        return track.segments;
+    }
+    let mut sentences: Vec<Piece> = Vec::new();
+    let mut open = false;
+    for word in track.words {
+        let text = word.text.trim();
+        match sentences.last_mut() {
+            Some(sentence) if open && sentence.speaker == word.speaker => {
+                sentence.text.push(' ');
+                sentence.text.push_str(text);
+            }
+            _ => sentences.push(Piece {
+                text: text.to_string(),
+                ..word
+            }),
+        }
+        open = !text.ends_with(['.', '?', '!']);
+    }
+    sentences
 }
 
 fn read_transcription(path: &Path) -> Result<Transcription> {
@@ -189,10 +219,10 @@ fn read_transcription(path: &Path) -> Result<Transcription> {
 }
 
 /// Interleaves both tracks by start time, mic first on ties, one line per
-/// segment.
-fn transcript(mic: &Transcription, desktop: &Transcription, name: &str) -> String {
-    let mic_lines = mic.segments.iter().map(|s| (s, name.to_string()));
-    let desktop_lines = desktop.segments.iter().map(|s| {
+/// sentence.
+fn transcript(mic: Transcription, desktop: Transcription, name: &str) -> String {
+    let mic_lines = sentences(mic).into_iter().map(|s| (s, name.to_string()));
+    let desktop_lines = sentences(desktop).into_iter().map(|s| {
         let label = match s.speaker {
             Some(index) => format!("Speaker {}", index + 1),
             None => "Them".to_string(),

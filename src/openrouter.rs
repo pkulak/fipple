@@ -28,7 +28,7 @@ impl<'a> OpenRouter<'a> {
             "model": self.settings.transcribe_model,
             "input_audio": {"data": STANDARD.encode(mp3), "format": "mp3"},
             "response_format": "verbose_json",
-            "timestamp_granularities": ["segment"],
+            "timestamp_granularities": ["segment", "word"],
             "provider": {"options": provider_options},
         });
         self.post("audio/transcriptions", &body)

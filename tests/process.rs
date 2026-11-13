@@ -227,7 +227,7 @@ fn processes_a_fresh_meeting() {
         );
         assert_eq!(body["model"], "test/transcribe");
         assert_eq!(body["response_format"], "verbose_json");
-        assert_eq!(body["timestamp_granularities"], json!(["segment"]));
+        assert_eq!(body["timestamp_granularities"], json!(["segment", "word"]));
         assert_eq!(body["input_audio"]["format"], "mp3");
         let audio = STANDARD
             .decode(body["input_audio"]["data"].as_str().unwrap())
@@ -302,6 +302,47 @@ fn existing_transcriptions_make_no_transcription_requests() {
     );
     assert_eq!(read(&finished, "transcript.md"), TRANSCRIPT);
     assert_eq!(read(&finished, "summary.md"), format!("{SUMMARY}\n"));
+}
+
+#[test]
+fn words_make_one_line_per_sentence() {
+    let mic = r#"{"text": "Hello there.", "segments": [
+        {"start": 2.0, "end": 2.6, "text": "Hello there."}
+    ], "words": [
+        {"word": "Hello", "start": 2.0, "end": 2.3},
+        {"word": " there.", "start": 2.3, "end": 2.6}
+    ]}"#;
+    // One segment for all of it, the way MAI-Transcribe 2 merges a speaker's
+    // turn.
+    let desktop = r#"{"text": "", "segments": [
+        {"start": 0.0, "end": 9.0, "text": "Everything.", "speaker": 0}
+    ], "words": [
+        {"word": "Morning.", "start": 0.0, "end": 0.5, "speaker": 0},
+        {"word": "Ready", "start": 1.0, "end": 1.2, "speaker": 0},
+        {"word": "to", "start": 1.2, "end": 1.3, "speaker": 0},
+        {"word": "start?", "start": 1.3, "end": 1.6, "speaker": 0},
+        {"word": "So", "start": 3.0, "end": 3.2, "speaker": 0},
+        {"word": "yes!", "start": 3.4, "end": 3.6, "speaker": 1}
+    ]}"#;
+    let stub = Stub::happy("Q3 planning");
+    let (root, dir) = meeting(&[("assets/mic.json", mic), ("assets/desktop.json", desktop)]);
+    record(&dir, "mic");
+
+    fipple::process(&dir, &stub.settings()).unwrap();
+
+    assert_eq!(
+        read(
+            &root.path().join("2026/11/12/1430 Q3 planning"),
+            "transcript.md"
+        ),
+        "\
+[00:00:00] **Speaker 1:** Morning.
+[00:00:01] **Speaker 1:** Ready to start?
+[00:00:02] **Phil:** Hello there.
+[00:00:03] **Speaker 1:** So
+[00:00:03] **Speaker 2:** yes!
+"
+    );
 }
 
 #[test]
