@@ -58,21 +58,29 @@
         }:
         let
           package = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+          cfg = config.services.fipple;
         in
         {
           options.services.fipple = {
             enable = lib.mkEnableOption "the fipple meeting recorder";
             echoCancel = lib.mkEnableOption "cancelling the speakers' echo out of the mic track";
+            onFinished = lib.mkOption {
+              type = lib.types.nullOr lib.types.path;
+              default = null;
+              description = "A script to run in each meeting folder after it's processed, with the folder as its argument.";
+            };
           };
 
-          config = lib.mkIf config.services.fipple.enable {
+          config = lib.mkIf cfg.enable {
             home.packages = [ package ];
             systemd.user.services.fipple = {
               Unit.Description = "fipple meeting recorder";
               Service = {
                 ExecStart = "${lib.getExe package} daemon";
                 Restart = "on-failure";
-                Environment = lib.mkIf config.services.fipple.echoCancel [ "FIPPLE_ECHO_CANCEL=true" ];
+                Environment =
+                  lib.optional cfg.echoCancel "FIPPLE_ECHO_CANCEL=true"
+                  ++ lib.optional (cfg.onFinished != null) "FIPPLE_ON_FINISHED=${cfg.onFinished}";
               };
               Install.WantedBy = [ "default.target" ];
             };

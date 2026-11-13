@@ -120,6 +120,7 @@ The daemon reads these environment variables when it starts:
 | `FIPPLE_TITLE_MODEL` | `anthropic/claude-haiku-5.5` | Chat model for the title |
 | `FIPPLE_SUMMARY_MODEL` | `openai/gpt-6.1-sol` | Chat model for the summary |
 | `FIPPLE_ECHO_CANCEL` | `false` | `true` to cancel speaker echo out of your track; see [Using Speakers](#using-speakers) |
+| `FIPPLE_ON_FINISHED` | none | Script to run on each processed meeting; see [When a Meeting Finishes](#when-a-meeting-finishes) |
 
 Set them the same way as the key, then restart the service. With Home Manager, you can also set them on the service:
 
@@ -140,3 +141,15 @@ services.fipple.echoCancel = true;
 Before transcribing, fipple uses WebRTC's echo canceller to remove the desktop track from your mic track, and saves the result as `assets/mic-clean.ogg`. `mic.ogg` stays as it was recorded. Recording doesn't change, so your call app's own echo cancellation works as usual.
 
 The canceller can only remove what fipple recorded on the desktop track, so your call app has to play through your default output.
+
+## When a Meeting Finishes
+
+To do something with each meeting once it's processed, such as copy the summary into your notes, point `FIPPLE_ON_FINISHED` at an executable. With Home Manager:
+
+```nix
+services.fipple.onFinished = pkgs.writeShellScript "fipple-finished" ''
+  cp summary.md ~/Notes/Meetings/"$(basename "$1")".md
+'';
+```
+
+fipple runs it inside the finished meeting folder, such as `~/Meetings/2026/11/12/1430 Q3 planning`, and passes that folder's path as its only argument. Its output goes to the daemon's log. The next meeting isn't processed until it exits.

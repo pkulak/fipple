@@ -4,6 +4,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -48,6 +49,9 @@ pub fn run() -> Result<()> {
     let daemon = Arc::new(Daemon {
         settings,
         meetings,
+        on_finished: env::var_os("FIPPLE_ON_FINISHED")
+            .filter(|hook| !hook.is_empty())
+            .map(PathBuf::from),
         state: Mutex::default(),
         queued: Condvar::new(),
     });
@@ -140,6 +144,9 @@ struct Daemon {
     settings: Settings,
     /// Where meeting folders go.
     meetings: PathBuf,
+    /// Run in each meeting folder after it's processed, with the folder as
+    /// its argument.
+    on_finished: Option<PathBuf>,
     state: Mutex<State>,
     /// Signalled when a folder joins the queue.
     queued: Condvar,
@@ -268,6 +275,14 @@ impl Daemon {
                 Ok(finished) => {
                     drop(state);
                     notify("Meeting processed", &self.name(&finished), Timeout::Default);
+                    if let Some(hook) = &self.on_finished
+                        && let Err(error) = run_hook(hook, &finished)
+                    {
+                        let error = format!("{error:#}");
+                        eprintln!("on-finished script for {}: {error}", finished.display());
+                        let body = format!("{}: {error}", self.name(&finished));
+                        notify("On-finished script failed", &body, Timeout::Default);
+                    }
                 }
                 Err(error) => {
                     let error = format!("{error:#}");
@@ -280,6 +295,20 @@ impl Daemon {
             }
         }
     }
+}
+
+/// Runs the on-finished script in a processed meeting folder. Its output goes
+/// to the daemon's.
+fn run_hook(hook: &Path, dir: &Path) -> Result<()> {
+    let status = Command::new(hook)
+        .arg(dir)
+        .current_dir(dir)
+        .status()
+        .with_context(|| format!("running {}", hook.display()))?;
+    if !status.success() {
+        bail!("{} failed with {status}", hook.display());
+    }
+    Ok(())
 }
 
 fn status(state: &State) -> String {
