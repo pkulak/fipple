@@ -34,15 +34,10 @@ impl Recording {
             started: Instant::now(),
             pipelines: Vec::new(),
         };
-        // No target is set, so PipeWire follows the default devices. Sharing a
-        // node group puts the mic and speakers on one clock, so the tracks
-        // don't drift apart, which echo cancellation needs.
+        // No target is set, so PipeWire follows the default devices.
         for (file, properties) in [
-            ("mic.ogg", "{ node.group = fipple }"),
-            (
-                "desktop.ogg",
-                "{ node.group = fipple stream.capture.sink = true }",
-            ),
+            ("mic.ogg", "{ }"),
+            ("desktop.ogg", "{ stream.capture.sink = true }"),
         ] {
             match Pipeline::start(&assets.join(file), properties) {
                 Ok(pipeline) => recording.pipelines.push(pipeline),

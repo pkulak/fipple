@@ -270,7 +270,7 @@ pub(crate) fn timestamp(seconds: f64) -> String {
 }
 
 /// The length of an audio file in seconds.
-fn duration(path: &Path) -> Result<f64> {
+pub(crate) fn duration(path: &Path) -> Result<f64> {
     let out = run(Command::new("ffprobe")
         .args([
             "-v",

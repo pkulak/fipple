@@ -6,7 +6,7 @@ use anyhow::{Context, Result, bail};
 use webrtc_audio_processing::config::{Config, EchoCanceller};
 use webrtc_audio_processing::{Processor, Stats};
 
-use crate::process::timestamp;
+use crate::process::{duration, timestamp};
 
 const RATE: &str = "48000";
 
@@ -23,6 +23,11 @@ const MIC_DELAY_FRAMES: usize = MIC_DELAY_MS as usize / 10;
 /// Writes `out` as Opus: the `mic` track with the echo of the `desktop` track
 /// cancelled out of it.
 ///
+/// The tracks start and stop together, so any difference in their lengths is
+/// the mic's and speakers' clocks drifting apart. Stretching the desktop track
+/// to the mic's length undoes that, so the echo lag holds steady however long
+/// the meeting runs.
+///
 /// The canceller finds the delay between the tracks itself. Its estimates of
 /// that delay and of its echo return loss enhancement (ERLE) are logged every
 /// ten minutes, and at the end.
@@ -33,8 +38,13 @@ pub fn cancel(mic: &Path, desktop: &Path, out: &Path) -> Result<()> {
         ..Default::default()
     });
 
-    let mut mic_decoder = decode(mic)?;
-    let mut desktop_decoder = decode(desktop)?;
+    // Played back at this rate, the desktop track is as long as the mic's.
+    let desktop_rate = (48_000.0 * duration(desktop)? / duration(mic)?).round() as u32;
+    let mut mic_decoder = decode(mic, None)?;
+    let mut desktop_decoder = decode(
+        desktop,
+        Some(&format!("asetrate={desktop_rate},aresample={RATE}")),
+    )?;
     let mut encoder = Command::new("ffmpeg")
         .args([
             "-nostdin", "-v", "error", "-y", "-f", "f32le", "-ar", RATE, "-ac", "1", "-i",
@@ -113,11 +123,13 @@ fn log(stats: &Stats, mic: &Path, frames: usize) {
     );
 }
 
-/// Starts an ffmpeg that writes `path` to stdout as raw mono samples.
-fn decode(path: &Path) -> Result<Child> {
+/// Starts an ffmpeg that writes `path` to stdout as raw mono samples, through
+/// `filter` if there is one.
+fn decode(path: &Path, filter: Option<&str>) -> Result<Child> {
     Command::new("ffmpeg")
         .args(["-nostdin", "-v", "error", "-i"])
         .arg(path)
+        .args(filter.map(|filter| ["-af", filter]).into_iter().flatten())
         .args(["-f", "f32le", "-ar", RATE, "-ac", "1", "pipe:1"])
         .stdout(Stdio::piped())
         .spawn()
@@ -185,16 +197,24 @@ mod tests {
 
     #[test]
     fn cancels_a_late_echo() {
-        assert_cancels("adelay=80");
+        assert_cancels("adelay=80,atrim=end=10");
     }
 
     #[test]
     fn cancels_an_early_echo() {
-        assert_cancels("atrim=start=0.05,asetpts=PTS-STARTPTS");
+        assert_cancels("atrim=start=0.05,asetpts=PTS-STARTPTS,apad=whole_dur=10");
     }
 
-    /// Records the desktop and a mic that hears it through `echo`, and checks
-    /// that cancelling removes the echo.
+    /// A mic clock running 5% slow, so the lag would shrink past zero within
+    /// seconds if the desktop track weren't stretched to match.
+    #[test]
+    fn cancels_an_echo_through_clock_drift() {
+        assert_cancels("adelay=80,atrim=end=10,asetrate=50400,aresample=48000");
+    }
+
+    /// Records 10 seconds of desktop and a mic that hears it through `echo`,
+    /// and checks that cancelling removes the echo. Like a real recording, the
+    /// mic should cover the same 10 seconds.
     fn assert_cancels(echo: &str) {
         let dir = tempfile::tempdir().unwrap();
         let desktop = dir.path().join("desktop.ogg");
