@@ -24,7 +24,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-/// The summary model's system prompt. `{name}` stands for `FIPPLE_NAME`.
+/// The summary model's system prompt. `{name}` stands for the `name` setting.
 const SUMMARY_SYSTEM: &str = r#"You turn meeting transcripts into minutes for the person who recorded the meeting. They'll read the minutes instead of the transcript and act on them, so everything in the minutes must come from the transcript: a plausible guess they can't tell from a fact is worse than a gap. Write in the language of the transcript, headings included.
 
 The transcript follows the meeting's date, start time and duration. Each transcript line is `[HH:MM:SS] **Label:** text`. Both the transcription and the speaker labels are automatic, and both make mistakes.

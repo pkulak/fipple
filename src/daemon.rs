@@ -8,7 +8,6 @@ use std::process::Command;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
-use std::{env, process};
 
 use anyhow::{Context, Result, anyhow, bail};
 use fipple::Settings;
@@ -16,6 +15,7 @@ use notify_rust::{Hint, Notification, Timeout};
 use signal_hook::consts::SIGTERM;
 use signal_hook::iterator::Signals;
 
+use crate::config::{self, Reminders};
 use crate::record::{self, Recording};
 
 /// Recordings shorter than this are taken to be accidental and discarded.
@@ -24,23 +24,14 @@ const MIN_RECORDING: Duration = Duration::from_secs(30);
 /// How long notifications about something the user just did stay up.
 const BRIEFLY: Timeout = Timeout::Milliseconds(5000);
 
-/// How long a recording runs before the first reminder pops up.
-const REMINDER_DELAY: Duration = Duration::from_secs(10 * 60);
-
-/// How often a reminder pops up after that.
-const REMINDER_INTERVAL: Duration = Duration::from_secs(10 * 60);
-
 /// How long a reminder stays up. Another one follows, so it can be short.
 const REMINDER_TIMEOUT: Timeout = Timeout::Milliseconds(3000);
 
 /// Listens for client requests, records meetings and processes them one at a
 /// time.
 pub fn run() -> Result<()> {
-    let settings = settings()?;
-    let meetings = match env::var_os("FIPPLE_DIR") {
-        Some(dir) => PathBuf::from(dir),
-        None => Path::new(&env::var_os("HOME").context("HOME is not set")?).join("Meetings"),
-    };
+    let config = config::load()?;
+    let meetings = config.meetings;
     fs::create_dir_all(&meetings).with_context(|| format!("creating {}", meetings.display()))?;
     // Match the canonical paths the client sends.
     let meetings = meetings.canonicalize()?;
@@ -56,9 +47,10 @@ pub fn run() -> Result<()> {
         UnixListener::bind(&socket).with_context(|| format!("binding {}", socket.display()))?;
 
     let daemon = Arc::new(Daemon {
-        settings,
+        settings: config.settings,
         meetings,
-        on_finished: path_var("FIPPLE_ON_FINISHED"),
+        on_finished: config.on_finished,
+        reminders: config.reminders,
         state: Mutex::default(),
         queued: Condvar::new(),
     });
@@ -87,45 +79,6 @@ pub fn run() -> Result<()> {
         }
     }
     Ok(())
-}
-
-/// The variables in the spec's "Configuration" table, besides `FIPPLE_DIR`.
-fn settings() -> Result<Settings> {
-    let api_key = env::var("OPENROUTER_API_KEY")
-        .ok()
-        .filter(|key| !key.is_empty())
-        .context("OPENROUTER_API_KEY is not set")?;
-    let mut settings = Settings::new(api_key);
-    let overrides = [
-        ("FIPPLE_NAME", &mut settings.name),
-        ("FIPPLE_TRANSCRIBE_MODEL", &mut settings.transcribe_model),
-        ("FIPPLE_TITLE_MODEL", &mut settings.title_model),
-        ("FIPPLE_SUMMARY_MODEL", &mut settings.summary_model),
-    ];
-    for (variable, setting) in overrides {
-        if let Ok(value) = env::var(variable) {
-            *setting = value;
-        }
-    }
-    if let Ok(options) = env::var("FIPPLE_TRANSCRIBE_OPTIONS") {
-        settings.transcribe_options = serde_json::from_str(&options)
-            .context("FIPPLE_TRANSCRIBE_OPTIONS is not valid JSON")?;
-    }
-    if let Ok(value) = env::var("FIPPLE_ECHO_CANCEL") {
-        settings.echo_cancel = value
-            .parse()
-            .context("FIPPLE_ECHO_CANCEL must be true or false")?;
-    }
-    settings.summary_instructions = path_var("FIPPLE_SUMMARY_INSTRUCTIONS");
-    settings.title_instructions = path_var("FIPPLE_TITLE_INSTRUCTIONS");
-    Ok(settings)
-}
-
-/// The path in an environment variable, unless it's unset or empty.
-fn path_var(variable: &str) -> Option<PathBuf> {
-    env::var_os(variable)
-        .filter(|path| !path.is_empty())
-        .map(PathBuf::from)
 }
 
 /// The meeting folders in `meetings` that haven't been titled yet, oldest
@@ -163,6 +116,7 @@ struct Daemon {
     /// Run in each meeting folder after it's processed, with the folder as
     /// its argument.
     on_finished: Option<PathBuf>,
+    reminders: Reminders,
     state: Mutex<State>,
     /// Signalled when a folder joins the queue.
     queued: Condvar,
@@ -214,10 +168,12 @@ impl Daemon {
         let dir = recording.dir.clone();
         let started = recording.started;
         state.recording = Some(recording);
-        thread::spawn({
-            let daemon = self.clone();
-            move || daemon.remind(started)
-        });
+        if self.reminders.enabled {
+            thread::spawn({
+                let daemon = self.clone();
+                move || daemon.remind(started)
+            });
+        }
         notify("Recording started", &self.name(&dir), BRIEFLY);
         Ok(format!("ok recording to {}\n", dir.display()))
     }
@@ -245,16 +201,15 @@ impl Daemon {
         Ok(format!("ok queued {}\n", dir.display()))
     }
 
-    /// Pops up a reminder after `REMINDER_DELAY` and every
-    /// `REMINDER_INTERVAL` after that, until the recording that began at
-    /// `started` stops. Each one replaces the last and stays out of the
-    /// notification history.
+    /// Pops up reminders on the configured schedule until the recording that
+    /// began at `started` stops. Each one replaces the last and stays out of
+    /// the notification history.
     fn remind(&self, started: Instant) {
         let mut id = None;
-        let mut wait = REMINDER_DELAY;
+        let mut minutes = self.reminders.delay_minutes;
         loop {
-            thread::sleep(wait);
-            wait = REMINDER_INTERVAL;
+            thread::sleep(Duration::from_secs(minutes * 60));
+            minutes = self.reminders.interval_minutes.get();
             let state = self.state.lock().unwrap();
             if state.recording.as_ref().map(|r| r.started) != Some(started) {
                 return;
@@ -293,7 +248,7 @@ impl Daemon {
         if let Some(recording) = state.recording.take() {
             recording.stop();
         }
-        process::exit(0);
+        std::process::exit(0);
     }
 
     /// Queues a folder for processing, unless it's already waiting or being

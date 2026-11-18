@@ -28,11 +28,14 @@ The flake provides a Home Manager module that installs `fipple` and runs the dae
 ```nix
 {
   imports = [ inputs.fipple.homeManagerModules.default ];
-  services.fipple.enable = true;
+  services.fipple = {
+    enable = true;
+    settings.api_key_command = "cat /run/agenix/openrouter";
+  };
 }
 ```
 
-The packaged binary brings its own `pw-record`, `ffmpeg` and `ffprobe`. The daemon won't start until it has an OpenRouter key; see [the OpenRouter Key](#the-openrouter-key).
+The packaged binary brings its own `pw-record`, `ffmpeg` and `ffprobe`. `settings` becomes the [config file](#configuration), and the daemon won't start until it has a way to get your OpenRouter key; see [the OpenRouter Key](#the-openrouter-key).
 
 ## Installing Without Nix
 
@@ -48,7 +51,7 @@ It links against version 2 of PulseAudio's [webrtc-audio-processing](https://git
 cargo install --git https://github.com/pkulak/fipple --features bundled
 ```
 
-fipple runs `pw-record`, `ffmpeg` and `ffprobe`, so make sure they're installed (`pw-record` usually comes with PipeWire's tools package). Then copy [`fipple.service`](fipple.service) into `~/.config/systemd/user/` and enable it:
+fipple runs `pw-record`, `ffmpeg` and `ffprobe`, so make sure they're installed (`pw-record` usually comes with PipeWire's tools package). Write a [config file](#configuration) with at least [your OpenRouter key](#the-openrouter-key), then copy [`fipple.service`](fipple.service) into `~/.config/systemd/user/` and enable it:
 
 ```sh
 systemctl --user enable --now fipple
@@ -58,22 +61,13 @@ The unit runs `~/.cargo/bin/fipple daemon`. If you put the binary somewhere else
 
 ## The OpenRouter Key
 
-The daemon reads `OPENROUTER_API_KEY` from its environment and refuses to start without it. As a systemd user service, it gets its environment from the systemd user manager, so that's where the key has to go. The easiest way is a file in `~/.config/environment.d/`:
+The config file's one required setting is `api_key_command`, a shell command that prints your OpenRouter key. The daemon runs it with `sh` when it starts, and won't start if the command fails or prints nothing. Keeping the key in its own file works well:
 
-```sh
-mkdir -p ~/.config/environment.d
-echo 'OPENROUTER_API_KEY=sk-or-v1-...' > ~/.config/environment.d/openrouter.conf
-chmod 600 ~/.config/environment.d/openrouter.conf
+```toml
+api_key_command = "cat ~/.config/fipple/openrouter-key"
 ```
 
-The user manager reads that directory when it starts, so it takes effect at your next login. To use it right away:
-
-```sh
-systemctl --user set-environment OPENROUTER_API_KEY=sk-or-v1-...
-systemctl --user restart fipple
-```
-
-Every user service can see the key this way. On Nix, don't put the key in your Home Manager config, or it'll end up in the world-readable store.
+If you don't mind the key sitting in the config file, `echo sk-or-v1-...` works too. With Home Manager, though, the config file ends up in the world-readable Nix store, so point the command at a secret managed by something like agenix instead.
 
 ## Commands
 
@@ -96,7 +90,7 @@ recording: /home/you/Meetings/2026/11/12/1430 for 00:12:05
 failed: /home/you/Meetings/2026/11/11/0900: track too long for one request
 ```
 
-Desktop notifications tell you when a recording starts, stops or is discarded, and when processing finishes or fails. While you're recording, a brief reminder with the elapsed time pops up after 10 minutes and every 10 minutes after that.
+Desktop notifications tell you when a recording starts, stops or is discarded, and when processing finishes or fails. While you're recording, a brief reminder with the elapsed time pops up after 10 minutes and every 10 minutes after that. You can change both times, or turn reminders off, in the [config file](#configuration).
 
 A recording shorter than 30 seconds is taken to be a double-tapped hotkey, and its folder is deleted.
 
@@ -108,36 +102,58 @@ Each track is sent to OpenRouter in one request, which works out to a limit of a
 
 ## Configuration
 
-The daemon reads these environment variables when it starts:
+The daemon reads `~/.config/fipple/config.toml` (or `$XDG_CONFIG_HOME/fipple/config.toml`) when it starts, and won't start without it:
 
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `OPENROUTER_API_KEY` | required | OpenRouter key |
-| `FIPPLE_DIR` | `~/Meetings` | Where meeting folders go |
-| `FIPPLE_NAME` | `Me` | Your label in the transcript and summary |
-| `FIPPLE_TRANSCRIBE_MODEL` | `microsoft/mai-transcribe-2` | Speech-to-text model |
-| `FIPPLE_TRANSCRIBE_OPTIONS` | `{"azure":{"diarization":{"enabled":true}}}` | JSON sent as `provider.options` when transcribing each track |
-| `FIPPLE_TITLE_MODEL` | `anthropic/claude-haiku-5.5` | Chat model for the title |
-| `FIPPLE_SUMMARY_MODEL` | `openai/gpt-6.1-sol` | Chat model for the summary |
-| `FIPPLE_ECHO_CANCEL` | `false` | `true` to cancel speaker echo out of your track; see [Using Speakers](#using-speakers) |
-| `FIPPLE_ON_FINISHED` | none | Script to run on each processed meeting; see [When a Meeting Finishes](#when-a-meeting-finishes) |
-| `FIPPLE_SUMMARY_INSTRUCTIONS` | none | File of your own instructions for the summary model; see [Your Own Instructions](#your-own-instructions) |
-| `FIPPLE_TITLE_INSTRUCTIONS` | none | File of your own instructions for the title model |
+```toml
+api_key_command = "cat ~/.config/fipple/openrouter-key"
+name = "Alice"
+echo_cancel = true
 
-Set them the same way as the key, then restart the service. With Home Manager, you can also set them on the service:
-
-```nix
-systemd.user.services.fipple.Service.Environment = [ "FIPPLE_NAME=Alice" ];
+[reminders]
+delay_minutes = 25
 ```
 
-`FIPPLE_TRANSCRIBE_OPTIONS` is what turns on speaker labels, and every provider asks for them differently. If you change `FIPPLE_TRANSCRIBE_MODEL`, you MUST set `FIPPLE_TRANSCRIBE_OPTIONS` to match the new model's provider. Otherwise the request will probably fail, or everyone else in the meeting will be lumped together as `Them`.
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `api_key_command` | required | Shell command that prints your OpenRouter key; see [the OpenRouter Key](#the-openrouter-key) |
+| `dir` | `~/Meetings` | Where meeting folders go |
+| `name` | `Me` | Your label in the transcript and summary |
+| `transcribe_model` | `microsoft/mai-transcribe-2` | Speech-to-text model |
+| `transcribe_options` | `{ azure = { diarization = { enabled = true } } }` | Table sent as `provider.options` when transcribing each track |
+| `title_model` | `anthropic/claude-haiku-5.5` | Chat model for the title |
+| `summary_model` | `openai/gpt-6.1-sol` | Chat model for the summary |
+| `echo_cancel` | `false` | `true` to cancel speaker echo out of your track; see [Using Speakers](#using-speakers) |
+| `on_finished` | none | Script to run on each processed meeting; see [When a Meeting Finishes](#when-a-meeting-finishes) |
+| `summary_instructions` | none | File of your own instructions for the summary model; see [Your Own Instructions](#your-own-instructions) |
+| `title_instructions` | none | File of your own instructions for the title model |
+| `reminders.enabled` | `true` | `false` to turn off the reminders while recording |
+| `reminders.delay_minutes` | `10` | Minutes before the first reminder |
+| `reminders.interval_minutes` | `10` | Minutes between reminders after that |
+
+Paths can start with `~`. An unknown key is an error, so a typo stops the daemon from starting rather than being ignored. After changing the file, restart the daemon:
+
+```sh
+systemctl --user restart fipple
+```
+
+With Home Manager, `services.fipple.settings` becomes the file, and switching restarts the daemon for you:
+
+```nix
+services.fipple.settings = {
+  api_key_command = "cat /run/agenix/openrouter";
+  name = "Alice";
+  reminders.delay_minutes = 25;
+};
+```
+
+`transcribe_options` is what turns on speaker labels, and every provider asks for them differently. If you change `transcribe_model`, you MUST set `transcribe_options` to match the new model's provider. Otherwise the request will probably fail, or everyone else in the meeting will be lumped together as `Them`.
 
 ## Using Speakers
 
-If you listen through speakers rather than headphones, your microphone picks up everyone else too, and their words show up in the transcript twice: once as themselves and once as you. Set `FIPPLE_ECHO_CANCEL=true` to fix that, or with Home Manager:
+If you listen through speakers rather than headphones, your microphone picks up everyone else too, and their words show up in the transcript twice: once as themselves and once as you. Set `echo_cancel = true` to fix that, or with Home Manager:
 
 ```nix
-services.fipple.echoCancel = true;
+services.fipple.settings.echo_cancel = true;
 ```
 
 Before transcribing, fipple uses WebRTC's echo canceller to remove the desktop track from your mic track, and saves the result as `assets/mic-clean.ogg`. `mic.ogg` stays as it was recorded. Recording doesn't change, so your call app's own echo cancellation works as usual.
@@ -146,20 +162,20 @@ The canceller can only remove what fipple recorded on the desktop track, so your
 
 ## Your Own Instructions
 
-To tell the models something about how you work, such as who's on your team or what language to write in, put it in a file and point `FIPPLE_SUMMARY_INSTRUCTIONS` or `FIPPLE_TITLE_INSTRUCTIONS` at it. With Home Manager:
+To tell the models something about how you work, such as who's on your team or what language to write in, put it in a file and point `summary_instructions` or `title_instructions` at it. With Home Manager:
 
 ```nix
-services.fipple.summaryInstructions = pkgs.writeText "summary.md" ''
+services.fipple.settings.summary_instructions = pkgs.writeText "summary.md" ''
   Write the minutes in English. My team is Alice, Bob and Carol.
 '';
 ```
 
 ## When a Meeting Finishes
 
-To do something with each meeting once it's processed, such as copy the summary into your notes, point `FIPPLE_ON_FINISHED` at an executable. With Home Manager:
+To do something with each meeting once it's processed, such as copy the summary into your notes, point `on_finished` at an executable. With Home Manager:
 
 ```nix
-services.fipple.onFinished = pkgs.writeShellScript "fipple-finished" ''
+services.fipple.settings.on_finished = pkgs.writeShellScript "fipple-finished" ''
   cp summary.md ~/Notes/Meetings/"$(basename "$1")".md
 '';
 ```

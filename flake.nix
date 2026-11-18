@@ -59,44 +59,30 @@
         let
           package = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
           cfg = config.services.fipple;
+          toml = pkgs.formats.toml { };
+          configFile = toml.generate "fipple.toml" cfg.settings;
         in
         {
           options.services.fipple = {
             enable = lib.mkEnableOption "the fipple meeting recorder";
-            echoCancel = lib.mkEnableOption "cancelling the speakers' echo out of the mic track";
-            onFinished = lib.mkOption {
-              type = lib.types.nullOr lib.types.path;
-              default = null;
-              description = "A script to run in each meeting folder after it's processed, with the folder as its argument.";
-            };
-            summaryInstructions = lib.mkOption {
-              type = lib.types.nullOr lib.types.path;
-              default = null;
-              description = "A file of instructions to add to the summary model's system prompt.";
-            };
-            titleInstructions = lib.mkOption {
-              type = lib.types.nullOr lib.types.path;
-              default = null;
-              description = "A file of instructions to add to the title model's system prompt.";
+            settings = lib.mkOption {
+              type = toml.type;
+              default = { };
+              description = "Written to fipple/config.toml in the XDG config folder. See the README's Configuration section.";
             };
           };
 
           config = lib.mkIf cfg.enable {
             home.packages = [ package ];
+            xdg.configFile."fipple/config.toml".source = configFile;
             systemd.user.services.fipple = {
-              Unit.Description = "fipple meeting recorder";
+              Unit = {
+                Description = "fipple meeting recorder";
+                X-Restart-Triggers = [ "${configFile}" ];
+              };
               Service = {
                 ExecStart = "${lib.getExe package} daemon";
                 Restart = "on-failure";
-                Environment =
-                  lib.optional cfg.echoCancel "FIPPLE_ECHO_CANCEL=true"
-                  ++ lib.optional (cfg.onFinished != null) "FIPPLE_ON_FINISHED=${cfg.onFinished}"
-                  ++ lib.optional (
-                    cfg.summaryInstructions != null
-                  ) "FIPPLE_SUMMARY_INSTRUCTIONS=${cfg.summaryInstructions}"
-                  ++ lib.optional (
-                    cfg.titleInstructions != null
-                  ) "FIPPLE_TITLE_INSTRUCTIONS=${cfg.titleInstructions}";
               };
               Install.WantedBy = [ "default.target" ];
             };
