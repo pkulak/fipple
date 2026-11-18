@@ -96,7 +96,7 @@ recording: /home/you/Meetings/2026/11/12/1430 for 00:12:05
 failed: /home/you/Meetings/2026/11/11/0900: track too long for one request
 ```
 
-Desktop notifications tell you when a recording starts, stops or is discarded, and when processing finishes or fails.
+Desktop notifications tell you when a recording starts, stops or is discarded, and when processing finishes or fails. While you're recording, a brief reminder with the elapsed time pops up after 10 minutes and every 10 minutes after that.
 
 A recording shorter than 30 seconds is taken to be a double-tapped hotkey, and its folder is deleted.
 

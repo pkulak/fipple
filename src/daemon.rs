@@ -7,12 +7,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{env, process};
 
 use anyhow::{Context, Result, anyhow, bail};
 use fipple::Settings;
-use notify_rust::{Notification, Timeout};
+use notify_rust::{Hint, Notification, Timeout};
 use signal_hook::consts::SIGTERM;
 use signal_hook::iterator::Signals;
 
@@ -23,6 +23,15 @@ const MIN_RECORDING: Duration = Duration::from_secs(30);
 
 /// How long notifications about something the user just did stay up.
 const BRIEFLY: Timeout = Timeout::Milliseconds(5000);
+
+/// How long a recording runs before the first reminder pops up.
+const REMINDER_DELAY: Duration = Duration::from_secs(10 * 60);
+
+/// How often a reminder pops up after that.
+const REMINDER_INTERVAL: Duration = Duration::from_secs(10 * 60);
+
+/// How long a reminder stays up. Another one follows, so it can be short.
+const REMINDER_TIMEOUT: Timeout = Timeout::Milliseconds(3000);
 
 /// Listens for client requests, records meetings and processes them one at a
 /// time.
@@ -170,7 +179,7 @@ struct State {
 
 impl Daemon {
     /// Answers one client request.
-    fn handle(&self, stream: UnixStream) -> Result<()> {
+    fn handle(self: &Arc<Self>, stream: UnixStream) -> Result<()> {
         let mut line = String::new();
         BufReader::new(&stream).read_line(&mut line)?;
         let request = line.trim_end_matches(['\r', '\n']);
@@ -197,13 +206,18 @@ impl Daemon {
         Ok(())
     }
 
-    fn start(&self, state: &mut State) -> Result<String> {
+    fn start(self: &Arc<Self>, state: &mut State) -> Result<String> {
         if state.recording.is_some() {
             bail!("already recording");
         }
         let recording = Recording::start(&self.meetings)?;
         let dir = recording.dir.clone();
+        let started = recording.started;
         state.recording = Some(recording);
+        thread::spawn({
+            let daemon = self.clone();
+            move || daemon.remind(started)
+        });
         notify("Recording started", &self.name(&dir), BRIEFLY);
         Ok(format!("ok recording to {}\n", dir.display()))
     }
@@ -229,6 +243,38 @@ impl Daemon {
         notify("Recording stopped", &self.name(&dir), BRIEFLY);
         self.enqueue(state, dir.clone());
         Ok(format!("ok queued {}\n", dir.display()))
+    }
+
+    /// Pops up a reminder after `REMINDER_DELAY` and every
+    /// `REMINDER_INTERVAL` after that, until the recording that began at
+    /// `started` stops. Each one replaces the last and stays out of the
+    /// notification history.
+    fn remind(&self, started: Instant) {
+        let mut id = None;
+        let mut wait = REMINDER_DELAY;
+        loop {
+            thread::sleep(wait);
+            wait = REMINDER_INTERVAL;
+            let state = self.state.lock().unwrap();
+            if state.recording.as_ref().map(|r| r.started) != Some(started) {
+                return;
+            }
+            drop(state);
+            let summary = format!("Recording · {} min", started.elapsed().as_secs() / 60);
+            let mut notification = Notification::new();
+            notification
+                .appname("fipple")
+                .summary(&summary)
+                .hint(Hint::Transient(true))
+                .timeout(REMINDER_TIMEOUT);
+            if let Some(id) = id {
+                notification.id(id);
+            }
+            match notification.show() {
+                Ok(handle) => id = Some(handle.id()),
+                Err(error) => eprintln!("sending a notification: {error}"),
+            }
+        }
     }
 
     /// A meeting folder's path under the meetings folder, such as
