@@ -461,7 +461,7 @@ fn a_failing_response_leaves_the_bare_name() {
     let transcriptions = AtomicUsize::new(0);
     let stub = Stub::start(move |path, _| match path {
         "/api/v1/audio/transcriptions" => transcription(&transcriptions),
-        _ => (500, "upstream error".to_string()),
+        _ => (400, "bad request".to_string()),
     });
     let (_root, dir) = meeting(&[]);
     record(&dir, "mic");
@@ -469,10 +469,48 @@ fn a_failing_response_leaves_the_bare_name() {
 
     let error = fipple::process(&dir, &stub.settings()).unwrap_err();
 
-    assert!(format!("{error:#}").contains("500"), "{error:#}");
+    assert!(format!("{error:#}").contains("400"), "{error:#}");
     assert_eq!(
         names(dir.parent().unwrap()),
         BTreeSet::from(["1430".into()])
     );
     assert!(!dir.join("summary.md").exists());
+}
+
+#[test]
+fn retries_rate_limited_transcriptions() {
+    let transcriptions = AtomicUsize::new(0);
+    let stub = Stub::start(move |path, body| {
+        match path {
+        "/api/v1/audio/transcriptions" => match transcriptions.fetch_add(1, Ordering::SeqCst) {
+            0 => (200, MIC_JSON.to_string()),
+            1 => (
+                429,
+                r#"{"error":{"message":"Provider returned 429","code":429,"metadata":{"retry_after_seconds":1,"headers":{"Retry-After":"1"}}}}"#
+                    .to_string(),
+            ),
+            _ => (200, DESKTOP_JSON.to_string()),
+        },
+        "/api/v1/chat/completions" if body["model"] == "test/summary" => (200, chat(SUMMARY)),
+        "/api/v1/chat/completions" if body["model"] == "test/title" => (200, chat("Q3 planning")),
+        _ => (404, format!("unexpected request to {path}")),
+    }
+    });
+    let (root, dir) = meeting(&[]);
+    record(&dir, "mic");
+    record(&dir, "desktop");
+
+    let finished = fipple::process(&dir, &stub.settings()).unwrap();
+
+    assert_eq!(finished, root.path().join("2026/11/12/1430 Q3 planning"));
+    assert_eq!(
+        stub.paths(),
+        [
+            "/api/v1/audio/transcriptions",
+            "/api/v1/audio/transcriptions",
+            "/api/v1/audio/transcriptions",
+            "/api/v1/chat/completions",
+            "/api/v1/chat/completions",
+        ]
+    );
 }
