@@ -129,6 +129,10 @@ delay_minutes = 25
 | `reminders.enabled` | `true` | `false` to turn off the reminders while recording |
 | `reminders.delay_minutes` | `10` | Minutes before the first reminder |
 | `reminders.interval_minutes` | `10` | Minutes between reminders after that |
+| `auto_record.script` | none | Executable polled to start and stop recordings; see [Automatic Recording](#automatic-recording) |
+| `auto_record.interval_seconds` | `5` | Seconds between polls |
+| `auto_record.stop_delay_seconds` | `15` | Seconds the script must report no meeting before stopping |
+| `auto_record.auto_start` | `true` | `false` to only auto-stop recordings you started yourself |
 
 Paths can start with `~`. An unknown key is an error, so a typo stops the daemon from starting rather than being ignored. After changing the file, restart the daemon:
 
@@ -181,3 +185,19 @@ services.fipple.settings.on_finished = pkgs.writeShellScript "fipple-finished" '
 ```
 
 fipple runs it inside the finished meeting folder, such as `~/Meetings/2026/11/12/1430 Q3 planning`, and passes that folder's path as its only argument. Its output goes to the daemon's log. The next meeting isn't processed until it exits.
+
+## Automatic Recording
+
+To start and stop recordings based on your own check, such as an open Zoom window, point `auto_record.script` at an executable. Exit `0` means a meeting is active, exit `1` means no meeting, and any other exit status is logged and ignored. With Home Manager:
+
+```nix
+services.fipple.settings.auto_record.script = pkgs.writeShellScript "fipple-in-meeting" ''
+  niri msg -j windows | jq -e 'any(.title == "Zoom Meeting")'
+'';
+```
+
+fipple only acts on changes in the script's answer:
+
+- When the script flips from `1` to `0`, recording starts (unless `auto_record.auto_start = false` or a recording is already running). If you stop a recording manually while the meeting is still open, it won't restart until the meeting ends and a new one begins.
+- When the script stays at `1` for `auto_record.stop_delay_seconds` (15 by default), any running recording stops. Brief gaps — such as Zoom moving out of a waiting room — don't split the recording, and a recording you started manually without the script ever returning `0` isn't stopped.
+- The first poll after startup sets the initial state without starting or stopping anything.

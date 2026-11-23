@@ -4,7 +4,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -15,7 +15,7 @@ use notify_rust::{Hint, Notification, Timeout};
 use signal_hook::consts::SIGTERM;
 use signal_hook::iterator::Signals;
 
-use crate::config::{self, Reminders};
+use crate::config::{self, AutoRecord, Reminders};
 use crate::record::{self, Recording};
 
 /// Recordings shorter than this are taken to be accidental and discarded.
@@ -64,6 +64,12 @@ pub fn run() -> Result<()> {
         let daemon = daemon.clone();
         move || daemon.work()
     });
+    if let Some(auto_record) = config.auto_record {
+        thread::spawn({
+            let daemon = daemon.clone();
+            move || daemon.watch(auto_record)
+        });
+    }
     let mut signals = Signals::new([SIGTERM])?;
     thread::spawn({
         let daemon = daemon.clone();
@@ -232,6 +238,46 @@ impl Daemon {
         }
     }
 
+    /// Polls the configured script and starts or stops recordings on changes.
+    fn watch(self: &Arc<Self>, auto_record: AutoRecord) {
+        let mut tracker = Tracker::new(auto_record.stop_delay, auto_record.auto_start);
+        let mut last_error: Option<String> = None;
+        loop {
+            match poll_script(&auto_record.script) {
+                Ok(active) => {
+                    last_error = None;
+                    match tracker.update(active, Instant::now()) {
+                        Some(Action::Start) => {
+                            let mut state = self.state.lock().unwrap();
+                            if state.recording.is_none()
+                                && let Err(error) = self.start(&mut state)
+                            {
+                                eprintln!("auto-record: starting recording: {error:#}");
+                            }
+                        }
+                        Some(Action::Stop) => {
+                            let mut state = self.state.lock().unwrap();
+                            if state.recording.is_some()
+                                && let Err(error) = self.stop(&mut state)
+                            {
+                                eprintln!("auto-record: stopping recording: {error:#}");
+                            }
+                        }
+                        None => {}
+                    }
+                }
+                Err(error) => {
+                    let message = format!("{error:#}");
+                    if last_error.as_deref() != Some(message.as_str()) {
+                        eprintln!("auto-record: {message}");
+                        last_error = Some(message);
+                    }
+                }
+            }
+            thread::sleep(auto_record.interval);
+        }
+    }
+
     /// A meeting folder's path under the meetings folder, such as
     /// `2026/11/12/1430`, for notifications.
     fn name(&self, dir: &Path) -> String {
@@ -348,6 +394,74 @@ fn status(state: &State) -> String {
     reply
 }
 
+/// Runs the meeting-detection script. Exit 0 means active, exit 1 means
+/// inactive, and any other status is an error.
+fn poll_script(script: &Path) -> Result<bool> {
+    let status = Command::new(script)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .status()
+        .with_context(|| format!("running {}", script.display()))?;
+    match status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => bail!("{} exited with {status}", script.display()),
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Action {
+    Start,
+    Stop,
+}
+
+/// Edge-triggered meeting state with a grace period before stopping.
+struct Tracker {
+    stop_delay: Duration,
+    auto_start: bool,
+    active: Option<bool>,
+    inactive_since: Option<Instant>,
+}
+
+impl Tracker {
+    fn new(stop_delay: Duration, auto_start: bool) -> Self {
+        Tracker {
+            stop_delay,
+            auto_start,
+            active: None,
+            inactive_since: None,
+        }
+    }
+
+    fn update(&mut self, is_active: bool, now: Instant) -> Option<Action> {
+        let Some(was_active) = self.active else {
+            self.active = Some(is_active);
+            return None;
+        };
+        match (was_active, is_active) {
+            (false, true) => {
+                self.active = Some(true);
+                self.auto_start.then_some(Action::Start)
+            }
+            (true, true) => {
+                self.inactive_since = None;
+                None
+            }
+            (true, false) => {
+                let since = *self.inactive_since.get_or_insert(now);
+                if now.duration_since(since) >= self.stop_delay {
+                    self.active = Some(false);
+                    self.inactive_since = None;
+                    Some(Action::Stop)
+                } else {
+                    None
+                }
+            }
+            (false, false) => None,
+        }
+    }
+}
+
 /// Sends a desktop notification. A failure is logged rather than returned,
 /// since nothing else depends on it.
 fn notify(summary: &str, body: &str, timeout: Timeout) {
@@ -359,5 +473,103 @@ fn notify(summary: &str, body: &str, timeout: Timeout) {
         .show()
     {
         eprintln!("sending a notification: {error}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    use tempfile::tempdir;
+
+    use super::*;
+
+    fn at(base: Instant, secs: u64) -> Instant {
+        base + Duration::from_secs(secs)
+    }
+
+    #[test]
+    fn seeds_initial_state_without_acting() {
+        let t = Instant::now();
+        let mut tracker = Tracker::new(Duration::from_secs(15), true);
+        assert_eq!(tracker.update(true, at(t, 0)), None);
+        assert_eq!(tracker.update(true, at(t, 5)), None);
+
+        let mut tracker = Tracker::new(Duration::from_secs(15), true);
+        assert_eq!(tracker.update(false, at(t, 0)), None);
+        assert_eq!(tracker.update(false, at(t, 5)), None);
+    }
+
+    #[test]
+    fn starts_immediately_and_stops_after_grace_period() {
+        let t = Instant::now();
+        let mut tracker = Tracker::new(Duration::from_secs(15), true);
+        assert_eq!(tracker.update(false, at(t, 0)), None);
+        assert_eq!(tracker.update(true, at(t, 5)), Some(Action::Start));
+        // Still active does not emit another Start (respects manual stop).
+        assert_eq!(tracker.update(true, at(t, 10)), None);
+
+        // First inactive starts the grace period.
+        assert_eq!(tracker.update(false, at(t, 15)), None);
+        assert_eq!(tracker.update(false, at(t, 20)), None);
+        assert_eq!(tracker.update(false, at(t, 29)), None);
+        assert_eq!(tracker.update(false, at(t, 30)), Some(Action::Stop));
+        // Staying inactive does not emit another Stop (respects manual start).
+        assert_eq!(tracker.update(false, at(t, 35)), None);
+
+        // Next meeting triggers a fresh Start.
+        assert_eq!(tracker.update(true, at(t, 40)), Some(Action::Start));
+    }
+
+    #[test]
+    fn brief_gap_cancels_pending_stop() {
+        let t = Instant::now();
+        let mut tracker = Tracker::new(Duration::from_secs(15), true);
+        assert_eq!(tracker.update(false, at(t, 0)), None);
+        assert_eq!(tracker.update(true, at(t, 5)), Some(Action::Start));
+
+        assert_eq!(tracker.update(false, at(t, 10)), None);
+        assert_eq!(tracker.update(false, at(t, 20)), None);
+        // Window comes back before the 15s grace period finishes.
+        assert_eq!(tracker.update(true, at(t, 24)), None);
+
+        // A later drop must wait a full 15s again.
+        assert_eq!(tracker.update(false, at(t, 30)), None);
+        assert_eq!(tracker.update(false, at(t, 40)), None);
+        assert_eq!(tracker.update(false, at(t, 45)), Some(Action::Stop));
+    }
+
+    #[test]
+    fn auto_start_false_only_stops() {
+        let t = Instant::now();
+        let mut tracker = Tracker::new(Duration::from_secs(15), false);
+        assert_eq!(tracker.update(false, at(t, 0)), None);
+        assert_eq!(tracker.update(true, at(t, 5)), None);
+        assert_eq!(tracker.update(false, at(t, 10)), None);
+        assert_eq!(tracker.update(false, at(t, 25)), Some(Action::Stop));
+    }
+
+    #[test]
+    fn zero_stop_delay_stops_immediately() {
+        let t = Instant::now();
+        let mut tracker = Tracker::new(Duration::ZERO, true);
+        assert_eq!(tracker.update(true, at(t, 0)), None);
+        assert_eq!(tracker.update(false, at(t, 5)), Some(Action::Stop));
+    }
+
+    #[test]
+    fn poll_script_maps_exit_codes() {
+        let dir = tempdir().unwrap();
+        let write_script = |name: &str, body: &str| {
+            let path = dir.path().join(name);
+            fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+            path
+        };
+
+        assert!(poll_script(&write_script("active", "exit 0")).unwrap());
+        assert!(!poll_script(&write_script("inactive", "exit 1")).unwrap());
+        assert!(poll_script(&write_script("error", "exit 2")).is_err());
+        assert!(poll_script(&dir.path().join("missing")).is_err());
     }
 }
